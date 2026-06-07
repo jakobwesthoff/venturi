@@ -10,7 +10,8 @@
 
 use crate::error::Error;
 use crate::store::{
-    JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Settlement, Status, Store,
+    CleanupCriteria, HistoryFilter, JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob,
+    Settlement, Snapshot, Status, Store,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -229,6 +230,79 @@ impl Store for FakeStore {
             .map(|job| job.visible_at)
             .min();
         Ok(soonest)
+    }
+
+    async fn query_jobs(&self, filter: &HistoryFilter) -> Result<Vec<JobRecord>, Error> {
+        let guard = self.inner.lock().expect("lock not poisoned");
+        let mut jobs: Vec<JobRecord> = guard
+            .jobs
+            .values()
+            .filter(|job| {
+                filter.kind.as_ref().is_none_or(|k| &job.kind == k)
+                    && filter.status.is_none_or(|s| job.status == s)
+                    && filter
+                        .finished_since
+                        .is_none_or(|since| job.finished_at.is_some_and(|f| f >= since))
+                    && filter
+                        .finished_until
+                        .is_none_or(|until| job.finished_at.is_some_and(|f| f < until))
+            })
+            .cloned()
+            .collect();
+        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        if let Some(limit) = filter.limit {
+            jobs.truncate(limit.max(0) as usize);
+        }
+        Ok(jobs)
+    }
+
+    async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error> {
+        let mut guard = self.inner.lock().expect("lock not poisoned");
+        let to_remove: Vec<Ulid> = guard
+            .jobs
+            .values()
+            .filter(|job| {
+                job.finished_at
+                    .is_some_and(|f| f < criteria.finished_before)
+                    && criteria.kind.as_ref().is_none_or(|k| &job.kind == k)
+                    && criteria.status.is_none_or(|s| job.status == s)
+            })
+            .map(|job| job.id)
+            .collect();
+        for id in &to_remove {
+            guard.jobs.remove(id);
+            // Cascade: drop the job's journal entries.
+            guard.journal.retain(|entry| &entry.job_id != id);
+        }
+        Ok(to_remove.len() as u64)
+    }
+
+    async fn stats(&self) -> Result<Snapshot, Error> {
+        let now = Utc::now();
+        let guard = self.inner.lock().expect("lock not poisoned");
+        let mut snapshot = Snapshot::default();
+        for job in guard.jobs.values() {
+            match job.status {
+                Status::Pending => {
+                    *snapshot
+                        .pending_by_kind
+                        .entry(job.kind.clone())
+                        .or_insert(0) += 1;
+                    let age = (now - job.created_at).to_std().unwrap_or(Duration::ZERO);
+                    snapshot
+                        .oldest_pending_age
+                        .entry(job.kind.clone())
+                        .and_modify(|current| *current = (*current).max(age))
+                        .or_insert(age);
+                }
+                Status::Claimed => snapshot.claimed += 1,
+                Status::Dead => {
+                    *snapshot.dead_by_kind.entry(job.kind.clone()).or_insert(0) += 1;
+                }
+                Status::Completed => {}
+            }
+        }
+        Ok(snapshot)
     }
 
     async fn find_stale(&self) -> Result<Vec<JobRecord>, Error> {

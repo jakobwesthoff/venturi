@@ -8,7 +8,10 @@
 
 use crate::context::JournalEntry;
 use crate::error::Error;
-use crate::store::{JournalAppend, JournalOutcome, MergePayload, NewJob, Store};
+use crate::store::{
+    CleanupCriteria, HistoryFilter, JobRecord, JournalAppend, JournalOutcome, JournalRecord,
+    MergePayload, NewJob, Snapshot, Store,
+};
 use crate::task::{Merge, Pending, Task};
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
@@ -49,6 +52,31 @@ impl Queue {
     pub async fn enqueue_at<T: Task>(&self, task: T, when: DateTime<Utc>) -> Result<Ulid, Error> {
         let now = Utc::now();
         self.submit(task, now, when).await
+    }
+
+    /// Query jobs by the history filter, most recently created first.
+    ///
+    /// This reads individual job rows for inspection and history; it is distinct
+    /// from [`stats`](Queue::stats), which reports live aggregate state.
+    pub async fn jobs(&self, filter: &HistoryFilter) -> Result<Vec<JobRecord>, Error> {
+        self.store.query_jobs(filter).await
+    }
+
+    /// Fetch a single job's journal timeline in chronological order.
+    pub async fn job_journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error> {
+        self.store.journal(id).await
+    }
+
+    /// Bulk-delete terminal jobs matching the criteria, cascading to their
+    /// journal entries. Returns the number of jobs deleted.
+    pub async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error> {
+        self.store.cleanup(criteria).await
+    }
+
+    /// A live snapshot of queue state: backlog depth and oldest-pending age per
+    /// kind, the in-flight (claimed) count, and dead counts per kind.
+    pub async fn stats(&self) -> Result<Snapshot, Error> {
+        self.store.stats().await
     }
 
     /// The deduplication-aware enqueue: a plain insert when the task does not
@@ -156,6 +184,7 @@ impl Queue {
         };
 
         if self.store.merge_into(candidate.id, update, journal).await? {
+            crate::observability::merged(&candidate.kind);
             Ok(candidate.id)
         } else {
             self.insert(incoming, created_at, visible_at, Some(key.to_owned()))
@@ -183,6 +212,7 @@ impl Queue {
             dedup_key,
         };
         self.store.enqueue(&job).await?;
+        crate::observability::enqueued(T::KIND);
         Ok(id)
     }
 }

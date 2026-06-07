@@ -272,6 +272,10 @@ where
 
                 match self.claim_with_fallback(&claimable, floor).await {
                     Ok(Some(job)) => {
+                        let wait = (Utc::now() - job.created_at)
+                            .to_std()
+                            .unwrap_or(Duration::ZERO);
+                        crate::observability::claimed(&job.kind, wait);
                         self.apply_task_lease(&job).await;
                         let history = self.history_for(job.id).await;
                         *by_kind.entry(job.kind.clone()).or_insert(0) += 1;
@@ -376,6 +380,7 @@ where
         mut inflight: HashMap<tokio::task::Id, InflightJob>,
         mut by_kind: HashMap<String, usize>,
     ) {
+        crate::observability::shutdown_drain(running.len());
         let deadline = tokio::time::sleep(self.config.shutdown_timeout);
         tokio::pin!(deadline);
 
@@ -448,12 +453,15 @@ where
                 note: Some(note),
                 attachment: None,
             };
-            if let Err(error) = self
+            let kind = job.kind.clone();
+            match self
                 .store
                 .recover(job.id, add_duration(now, delay), next_failures, journal)
                 .await
             {
-                tracing::warn!(%error, "stale-claim recovery failed");
+                Ok(true) => crate::observability::recovered(&kind),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(%error, "stale-claim recovery failed"),
             }
         }
     }
@@ -569,7 +577,7 @@ where
         let now = Utc::now();
         let next_failures = finished.failure_count.saturating_add(1);
 
-        let (settlement, note, attachment) = match finished.report {
+        let (settlement, note, attachment, duration) = match finished.report {
             // The payload or carry could not be decoded: the job is unrunnable, so
             // give up on it rather than spin.
             Err(error) => {
@@ -578,19 +586,27 @@ where
                     finished_at: now,
                     failure_count: next_failures,
                 };
-                (settlement, Some(error.to_string()), None)
+                (settlement, Some(error.to_string()), None, Duration::ZERO)
             }
             Ok(report) => {
                 let settlement = self.settlement_for(&report, finished.id, now, next_failures);
-                (settlement, note_for(&report.result), report.attachment)
+                (
+                    settlement,
+                    note_for(&report.result),
+                    report.attachment,
+                    report.duration,
+                )
             }
         };
+
+        let outcome = journal_outcome_for(&settlement);
+        crate::observability::settled(&finished.kind, outcome, duration);
 
         let journal = JournalAppend {
             kind: finished.kind,
             run_no: finished.run_no,
             recorded_at: now,
-            outcome: journal_outcome_for(&settlement),
+            outcome,
             note,
             attachment,
         };

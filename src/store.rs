@@ -16,6 +16,7 @@
 use crate::error::Error;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
 use std::time::Duration;
 use ulid::Ulid;
 
@@ -408,6 +409,16 @@ pub trait Store: Send + Sync {
         lease: Duration,
     ) -> Result<bool, Error>;
 
+    /// Query jobs by the history filter, newest first.
+    async fn query_jobs(&self, filter: &HistoryFilter) -> Result<Vec<JobRecord>, Error>;
+
+    /// Bulk-delete terminal jobs matching the criteria, cascading to the journal.
+    /// Returns the number of jobs deleted.
+    async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error>;
+
+    /// Compute a live state snapshot from on-demand aggregate queries.
+    async fn stats(&self) -> Result<Snapshot, Error>;
+
     /// Apply a merge decision to a pending candidate, appending `journal`.
     ///
     /// `update` carries the new `(payload, carry)` for a Replace/With decision, or
@@ -430,6 +441,50 @@ pub struct MergePayload {
     pub payload: serde_json::Value,
     /// The serialized carry the surviving job should continue from.
     pub carry: serde_json::Value,
+}
+
+/// A filter for the history query: every set field narrows the result, and the
+/// unset fields are unconstrained.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryFilter {
+    /// Restrict to one task kind.
+    pub kind: Option<String>,
+    /// Restrict to one lifecycle status.
+    pub status: Option<Status>,
+    /// Only jobs that reached a terminal state at or after this time.
+    pub finished_since: Option<DateTime<Utc>>,
+    /// Only jobs that reached a terminal state strictly before this time.
+    pub finished_until: Option<DateTime<Utc>>,
+    /// Cap the number of rows returned (most recently created first).
+    pub limit: Option<i64>,
+}
+
+/// Criteria for bulk cleanup: which terminal jobs to delete.
+///
+/// Only terminal jobs (those with a `finished_at`) are eligible, and removing a
+/// job cascades to its journal.
+#[derive(Debug, Clone)]
+pub struct CleanupCriteria {
+    /// Delete jobs whose `finished_at` is strictly before this time.
+    pub finished_before: DateTime<Utc>,
+    /// Restrict deletion to one kind.
+    pub kind: Option<String>,
+    /// Restrict deletion to one terminal status (`Completed` or `Dead`); `None`
+    /// deletes both.
+    pub status: Option<Status>,
+}
+
+/// A point-in-time snapshot of live queue state, from on-demand aggregates.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    /// Backlog depth per kind: the number of pending jobs.
+    pub pending_by_kind: BTreeMap<String, u64>,
+    /// The age of the oldest pending job per kind, measured from its enqueue time.
+    pub oldest_pending_age: BTreeMap<String, Duration>,
+    /// The number of jobs currently claimed (in flight across the system).
+    pub claimed: u64,
+    /// The number of dead jobs per kind.
+    pub dead_by_kind: BTreeMap<String, u64>,
 }
 
 /// A wakeup source the worker awaits to learn that new work may be available.

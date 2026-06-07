@@ -15,6 +15,7 @@
 pub mod backoff;
 pub mod context;
 pub mod error;
+mod observability;
 pub mod outcome;
 pub mod queue;
 pub mod store;

@@ -12,7 +12,8 @@ mod rows;
 
 use crate::error::Error;
 use crate::store::{
-    JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Notifier, Settlement, Store,
+    CleanupCriteria, HistoryFilter, JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob,
+    Notifier, Settlement, Snapshot, Store,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -21,6 +22,7 @@ use notify::PgNotifier;
 use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
 use std::time::Duration;
 use tokio_postgres::Client;
+use tokio_postgres::types::ToSql;
 use ulid::Ulid;
 
 /// The PostgreSQL-backed storage adapter.
@@ -392,6 +394,125 @@ impl Store for PostgresStore {
             .execute(&sql, &[&id.to_string(), &claimed_by, &lease.as_secs_f64()])
             .await?;
         Ok(affected > 0)
+    }
+
+    async fn query_jobs(&self, filter: &HistoryFilter) -> Result<Vec<JobRecord>, Error> {
+        // Build the WHERE clause from whichever fields are set, binding each as a
+        // positional parameter so nothing is interpolated into the SQL.
+        let status = filter.status.map(|s| s.as_str());
+        let mut params: Vec<&(dyn ToSql + Sync)> = Vec::new();
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(kind) = &filter.kind {
+            params.push(kind);
+            clauses.push(format!("kind = ${}", params.len()));
+        }
+        if let Some(status) = &status {
+            params.push(status);
+            clauses.push(format!("status = ${}", params.len()));
+        }
+        if let Some(since) = &filter.finished_since {
+            params.push(since);
+            clauses.push(format!("finished_at >= ${}", params.len()));
+        }
+        if let Some(until) = &filter.finished_until {
+            params.push(until);
+            clauses.push(format!("finished_at < ${}", params.len()));
+        }
+
+        let where_clause = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+        let limit_clause = match &filter.limit {
+            Some(limit) => {
+                params.push(limit);
+                format!("LIMIT ${}", params.len())
+            }
+            None => String::new(),
+        };
+
+        let sql = format!(
+            "SELECT {columns} FROM {prefix}_jobs {where_clause} \
+             ORDER BY created_at DESC {limit_clause}",
+            columns = JOB_COLUMNS,
+            prefix = self.prefix,
+        );
+
+        let conn = self.pool.get().await?;
+        let rows = conn.query(&sql, &params).await?;
+        rows.iter().map(job_from_row).collect()
+    }
+
+    async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error> {
+        // `finished_at < $1` already restricts to terminal jobs, since only
+        // completed/dead rows have it set.
+        let status = criteria.status.map(|s| s.as_str());
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&criteria.finished_before];
+        let mut clauses = vec![
+            "finished_at IS NOT NULL".to_owned(),
+            "finished_at < $1".to_owned(),
+        ];
+
+        if let Some(kind) = &criteria.kind {
+            params.push(kind);
+            clauses.push(format!("kind = ${}", params.len()));
+        }
+        if let Some(status) = &status {
+            params.push(status);
+            clauses.push(format!("status = ${}", params.len()));
+        }
+
+        let sql = format!(
+            "DELETE FROM {prefix}_jobs WHERE {}",
+            clauses.join(" AND "),
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        Ok(conn.execute(&sql, &params).await?)
+    }
+
+    async fn stats(&self) -> Result<Snapshot, Error> {
+        let conn = self.pool.get().await?;
+        let mut snapshot = Snapshot::default();
+
+        // Pending backlog and oldest age per kind in one grouped pass.
+        let pending_sql = format!(
+            "SELECT kind, count(*), min(created_at) FROM {prefix}_jobs \
+             WHERE status = 'pending' GROUP BY kind",
+            prefix = self.prefix,
+        );
+        let now = Utc::now();
+        for row in conn.query(&pending_sql, &[]).await? {
+            let kind: String = row.get(0);
+            let count: i64 = row.get(1);
+            let oldest: DateTime<Utc> = row.get(2);
+            snapshot
+                .pending_by_kind
+                .insert(kind.clone(), count.max(0) as u64);
+            let age = (now - oldest).to_std().unwrap_or(Duration::ZERO);
+            snapshot.oldest_pending_age.insert(kind, age);
+        }
+
+        let claimed_sql = format!(
+            "SELECT count(*) FROM {prefix}_jobs WHERE status = 'claimed'",
+            prefix = self.prefix,
+        );
+        let claimed: i64 = conn.query_one(&claimed_sql, &[]).await?.get(0);
+        snapshot.claimed = claimed.max(0) as u64;
+
+        let dead_sql = format!(
+            "SELECT kind, count(*) FROM {prefix}_jobs WHERE status = 'dead' GROUP BY kind",
+            prefix = self.prefix,
+        );
+        for row in conn.query(&dead_sql, &[]).await? {
+            let kind: String = row.get(0);
+            let count: i64 = row.get(1);
+            snapshot.dead_by_kind.insert(kind, count.max(0) as u64);
+        }
+
+        Ok(snapshot)
     }
 
     async fn dedup_candidate(

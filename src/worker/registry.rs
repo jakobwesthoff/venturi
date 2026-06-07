@@ -45,6 +45,8 @@ pub(crate) struct RunReport {
     pub backoff: Option<Backoff>,
     /// Structured evidence the handler attached during the run, for the journal.
     pub attachment: Option<serde_json::Value>,
+    /// How long the handler's `handle` call took, for the duration metric.
+    pub duration: Duration,
 }
 
 /// A boxed, `Send` future produced by dispatching one run.
@@ -157,7 +159,9 @@ where
             };
 
             let mut ctx = Context::new(input.run_count, input.history, carry, input.cancel);
+            let started = std::time::Instant::now();
             let result = payload.handle(&mut ctx, &input.state).await;
+            let duration = started.elapsed();
 
             // Capture the per-task backoff override before dropping the payload,
             // so the worker can schedule a retry without the concrete type.
@@ -170,6 +174,7 @@ where
                 carry,
                 backoff,
                 attachment,
+                duration,
             })
         })
     })

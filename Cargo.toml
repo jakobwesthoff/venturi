@@ -39,6 +39,7 @@ metrics = ["dep:metrics"]
 
 [dev-dependencies]
 futures = "0.3.32"
+metrics-util = { version = "0.20.4", features = ["debugging"] }
 proptest = "1.11.0"
 testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }

@@ -42,6 +42,8 @@ pub(crate) struct RunReport {
     pub carry: serde_json::Value,
     /// The task's per-task backoff override, if any, for scheduling a retry.
     pub backoff: Option<Backoff>,
+    /// Structured evidence the handler attached during the run, for the journal.
+    pub attachment: Option<serde_json::Value>,
 }
 
 /// A boxed, `Send` future produced by dispatching one run.
@@ -116,13 +118,13 @@ where
             // so the worker can schedule a retry without the concrete type.
             let backoff = payload.backoff();
 
-            // The attachment is consumed once journaling lands; drop it for now.
-            let (carry, _attachment) = ctx.into_parts();
+            let (carry, attachment) = ctx.into_parts();
             let carry = serde_json::to_value(carry)?;
             Ok(RunReport {
                 result,
                 carry,
                 backoff,
+                attachment,
             })
         })
     })

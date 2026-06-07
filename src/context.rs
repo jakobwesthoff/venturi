@@ -29,6 +29,23 @@ pub struct JournalEntry {
 }
 
 impl JournalEntry {
+    /// Construct an entry. Used by the worker when loading history from storage.
+    pub(crate) fn new(
+        run_no: u32,
+        recorded_at: DateTime<Utc>,
+        outcome: JournalOutcome,
+        note: Option<String>,
+        attachment: Option<serde_json::Value>,
+    ) -> JournalEntry {
+        JournalEntry {
+            run_no,
+            recorded_at,
+            outcome,
+            note,
+            attachment,
+        }
+    }
+
     /// The run number this entry recorded.
     pub fn run_no(&self) -> u32 {
         self.run_no

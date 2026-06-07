@@ -3,12 +3,13 @@
 //!
 //! It mirrors the semantics the PostgreSQL adapter implements in SQL: claim picks
 //! the highest-priority oldest eligible row for a registered kind above the
-//! priority floor, settlement is guarded by claim ownership, and `visible_at`
-//! gates eligibility. It is deliberately simple (one mutex over a row map) since
-//! tests value clarity over throughput.
+//! priority floor, settlement is guarded by claim ownership and appends a journal
+//! entry in the same step, and `visible_at` gates eligibility. It is deliberately
+//! simple (one mutex over the whole state) since tests value clarity over
+//! throughput.
 
 use crate::error::Error;
-use crate::store::{JobRecord, NewJob, Settlement, Status, Store};
+use crate::store::{JobRecord, JournalAppend, JournalRecord, NewJob, Settlement, Status, Store};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -16,10 +17,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use ulid::Ulid;
 
+/// The mutable state behind a [`FakeStore`].
+#[derive(Default)]
+struct Inner {
+    jobs: HashMap<Ulid, JobRecord>,
+    journal: Vec<JournalRecord>,
+    next_journal_id: i64,
+}
+
 /// A shareable in-memory store. Cloning shares the same underlying state.
 #[derive(Clone, Default)]
 pub(crate) struct FakeStore {
-    inner: Arc<Mutex<HashMap<Ulid, JobRecord>>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl FakeStore {
@@ -33,6 +42,7 @@ impl FakeStore {
         self.inner
             .lock()
             .expect("lock not poisoned")
+            .jobs
             .get(&id)
             .cloned()
     }
@@ -42,6 +52,7 @@ impl FakeStore {
         self.inner
             .lock()
             .expect("lock not poisoned")
+            .jobs
             .values()
             .filter(|job| job.status == status)
             .count()
@@ -74,6 +85,7 @@ impl Store for FakeStore {
         self.inner
             .lock()
             .expect("lock not poisoned")
+            .jobs
             .insert(job.id, record);
         Ok(())
     }
@@ -92,7 +104,7 @@ impl Store for FakeStore {
         // determinism (the real claim leaves equal-key ties to the planner).
         let mut best: Option<Ulid> = None;
         let mut best_key: Option<(i16, DateTime<Utc>, Ulid)> = None;
-        for job in guard.values() {
+        for job in guard.jobs.values() {
             let eligible = job.status == Status::Pending
                 && job.visible_at <= now
                 && job.priority >= priority_floor
@@ -111,7 +123,7 @@ impl Store for FakeStore {
             return Ok(None);
         };
 
-        let job = guard.get_mut(&id).expect("selected job exists");
+        let job = guard.jobs.get_mut(&id).expect("selected job exists");
         job.status = Status::Claimed;
         job.claimed_by = Some(claimed_by.to_owned());
         job.claim_expires_at = Some(add_duration(now, lease));
@@ -124,9 +136,10 @@ impl Store for FakeStore {
         id: Ulid,
         claimed_by: &str,
         settlement: Settlement,
+        journal: JournalAppend,
     ) -> Result<bool, Error> {
         let mut guard = self.inner.lock().expect("lock not poisoned");
-        let Some(job) = guard.get_mut(&id) else {
+        let Some(job) = guard.jobs.get_mut(&id) else {
             return Ok(false);
         };
 
@@ -170,7 +183,32 @@ impl Store for FakeStore {
         }
         job.claimed_by = None;
         job.claim_expires_at = None;
+
+        let entry_id = guard.next_journal_id;
+        guard.next_journal_id += 1;
+        guard.journal.push(JournalRecord {
+            id: entry_id,
+            job_id: id,
+            kind: journal.kind,
+            run_no: journal.run_no,
+            recorded_at: journal.recorded_at,
+            outcome: journal.outcome,
+            note: journal.note,
+            attachment: journal.attachment,
+        });
         Ok(true)
+    }
+
+    async fn journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error> {
+        let guard = self.inner.lock().expect("lock not poisoned");
+        let mut entries: Vec<JournalRecord> = guard
+            .journal
+            .iter()
+            .filter(|entry| entry.job_id == id)
+            .cloned()
+            .collect();
+        entries.sort_by_key(|entry| entry.id);
+        Ok(entries)
     }
 }
 

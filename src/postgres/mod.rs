@@ -10,10 +10,10 @@ mod migrations;
 mod rows;
 
 use crate::error::Error;
-use crate::store::{JobRecord, NewJob, Settlement, Store};
+use crate::store::{JobRecord, JournalAppend, JournalRecord, NewJob, Settlement, Store};
 use async_trait::async_trait;
 use deadpool_postgres::Pool;
-use rows::{JOB_COLUMNS, job_from_row};
+use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
 use std::time::Duration;
 use tokio_postgres::Client;
 use ulid::Ulid;
@@ -153,13 +153,17 @@ impl Store for PostgresStore {
         id: Ulid,
         claimed_by: &str,
         settlement: Settlement,
+        journal: JournalAppend,
     ) -> Result<bool, Error> {
         // Every settlement clears the claim columns and is guarded by claim
         // ownership, so a handler cannot settle a job another worker reclaimed.
+        // The transition and its journal entry share one transaction, so the
+        // journal never records a settlement that did not apply.
         let guard = "WHERE id = $1 AND claimed_by = $2 AND status = 'claimed'";
         let id = id.to_string();
 
-        let conn = self.pool.get().await?;
+        let mut conn = self.pool.get().await?;
+        let tx = conn.transaction().await?;
         let affected = match settlement {
             Settlement::Complete { finished_at } => {
                 let sql = format!(
@@ -167,8 +171,7 @@ impl Store for PostgresStore {
                          claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                conn.execute(&sql, &[&id, &claimed_by, &finished_at])
-                    .await?
+                tx.execute(&sql, &[&id, &claimed_by, &finished_at]).await?
             }
             Settlement::Retry {
                 visible_at,
@@ -181,7 +184,7 @@ impl Store for PostgresStore {
                          claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                conn.execute(
+                tx.execute(
                     &sql,
                     &[&id, &claimed_by, &visible_at, &failure_count, &carry],
                 )
@@ -193,7 +196,7 @@ impl Store for PostgresStore {
                          carry = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                conn.execute(&sql, &[&id, &claimed_by, &visible_at, &carry])
+                tx.execute(&sql, &[&id, &claimed_by, &visible_at, &carry])
                     .await?
             }
             Settlement::Dead {
@@ -205,7 +208,7 @@ impl Store for PostgresStore {
                          failure_count = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                conn.execute(&sql, &[&id, &claimed_by, &finished_at, &failure_count])
+                tx.execute(&sql, &[&id, &claimed_by, &finished_at, &failure_count])
                     .await?
             }
             Settlement::Release { visible_at } => {
@@ -214,11 +217,47 @@ impl Store for PostgresStore {
                          claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                conn.execute(&sql, &[&id, &claimed_by, &visible_at]).await?
+                tx.execute(&sql, &[&id, &claimed_by, &visible_at]).await?
             }
         };
 
+        // Record the journal entry only when the transition actually applied, so
+        // a guard miss leaves no orphan entry.
+        if affected > 0 {
+            let sql = format!(
+                "INSERT INTO {prefix}_journal \
+                 (job_id, kind, run_no, recorded_at, outcome, note, attachment) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                prefix = self.prefix,
+            );
+            tx.execute(
+                &sql,
+                &[
+                    &id,
+                    &journal.kind,
+                    &journal.run_no,
+                    &journal.recorded_at,
+                    &journal.outcome.as_str(),
+                    &journal.note,
+                    &journal.attachment,
+                ],
+            )
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(affected > 0)
+    }
+
+    async fn journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error> {
+        let sql = format!(
+            "SELECT {columns} FROM {prefix}_journal WHERE job_id = $1 ORDER BY id",
+            columns = JOURNAL_COLUMNS,
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        let rows = conn.query(&sql, &[&id.to_string()]).await?;
+        rows.iter().map(journal_from_row).collect()
     }
 }
 

@@ -220,6 +220,27 @@ pub struct NewJob {
     pub dedup_key: Option<String>,
 }
 
+/// A journal entry to append as part of settling a job.
+///
+/// Exactly one entry is written per execution (and, later, per applied merge), in
+/// the same transaction as the job-row transition, so the journal is a hole-free
+/// per-job event log.
+#[derive(Debug, Clone)]
+pub struct JournalAppend {
+    /// The job's kind, denormalized so the journal is queryable without a join.
+    pub kind: String,
+    /// The run number this entry records.
+    pub run_no: i32,
+    /// When the entry is written.
+    pub recorded_at: DateTime<Utc>,
+    /// The recorded outcome.
+    pub outcome: JournalOutcome,
+    /// The run's conclusion, or on failure the error message.
+    pub note: Option<String>,
+    /// Structured evidence gathered during the run.
+    pub attachment: Option<serde_json::Value>,
+}
+
 /// A guarded settlement of a claimed job: the lifecycle transition to apply.
 ///
 /// Every settlement is applied only if the worker still holds the claim (see
@@ -310,16 +331,21 @@ pub trait Store: Send + Sync {
         claimed_by: &str,
     ) -> Result<Option<JobRecord>, Error>;
 
-    /// Apply a settlement to a claimed job, guarded by claim ownership.
+    /// Apply a settlement to a claimed job, guarded by claim ownership, appending
+    /// `journal` in the same transaction.
     ///
     /// The write applies only if the row is still `claimed` by `claimed_by`.
     /// Returns `true` if it applied and `false` if the guard did not match (the
     /// job was reclaimed or already settled), so the caller can skip rather than
-    /// retry.
+    /// retry. When the guard does not match, the journal entry is not written.
     async fn settle(
         &self,
         id: Ulid,
         claimed_by: &str,
         settlement: Settlement,
+        journal: JournalAppend,
     ) -> Result<bool, Error>;
+
+    /// Load a job's journal in chronological order.
+    async fn journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error>;
 }

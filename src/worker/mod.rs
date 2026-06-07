@@ -10,9 +10,10 @@
 mod registry;
 
 use crate::backoff::{Backoff, retry_delay};
+use crate::context::JournalEntry;
 use crate::error::Error;
 use crate::outcome::Outcome;
-use crate::store::{Settlement, Store};
+use crate::store::{JournalAppend, JournalOutcome, JournalRecord, Settlement, Store};
 use crate::task::Handler;
 use chrono::{DateTime, Utc};
 use registry::{Registry, RunInput, RunReport};
@@ -203,7 +204,10 @@ where
                     )
                     .await
                 {
-                    Ok(Some(job)) => self.spawn(&mut running, job, &shutdown),
+                    Ok(Some(job)) => {
+                        let history = self.history_for(job.id).await;
+                        self.spawn(&mut running, job, history, &shutdown);
+                    }
                     Ok(None) => break,
                     Err(error) => {
                         // Never crash on a transient storage error; back off to
@@ -240,23 +244,36 @@ where
         }
     }
 
+    /// Load a job's journal as the history a handler sees, tolerating a read
+    /// failure by handing the handler an empty history rather than failing the run.
+    async fn history_for(&self, id: Ulid) -> Vec<JournalEntry> {
+        match self.store.journal(id).await {
+            Ok(records) => records.into_iter().map(record_to_entry).collect(),
+            Err(error) => {
+                tracing::warn!(%error, "could not load job history; proceeding with none");
+                Vec::new()
+            }
+        }
+    }
+
     /// Spawn a claimed job's handler into the in-flight set.
     fn spawn(
         &self,
         running: &mut JoinSet<FinishedRun>,
         job: crate::store::JobRecord,
+        history: Vec<JournalEntry>,
         shutdown: &CancellationToken,
     ) {
         let id = job.id;
         let kind = job.kind.clone();
+        let run_no = job.run_count;
         let failure_count = job.failure_count;
 
         let input = RunInput {
             payload: job.payload,
             carry: job.carry,
             run_count: job.run_count.max(0) as u32,
-            // History loading lands with the journal phase; empty for now.
-            history: Vec::new(),
+            history,
             state: Arc::clone(&self.state),
             cancel: shutdown.clone(),
         };
@@ -269,6 +286,8 @@ where
             };
             FinishedRun {
                 id,
+                kind,
+                run_no,
                 failure_count,
                 report,
             }
@@ -292,26 +311,39 @@ where
     }
 
     /// Compute and apply the settlement for one finished run, guarded by claim
-    /// ownership.
+    /// ownership, recording one journal entry for the execution.
     async fn settle(&self, finished: FinishedRun) -> Result<(), Error> {
         let now = Utc::now();
         let next_failures = finished.failure_count.saturating_add(1);
 
-        let settlement = match finished.report {
+        let (settlement, note, attachment) = match finished.report {
             // The payload or carry could not be decoded: the job is unrunnable, so
             // give up on it rather than spin.
             Err(error) => {
                 tracing::error!(%error, "job could not be dispatched; marking dead");
-                Settlement::Dead {
+                let settlement = Settlement::Dead {
                     finished_at: now,
                     failure_count: next_failures,
-                }
+                };
+                (settlement, Some(error.to_string()), None)
             }
-            Ok(report) => self.settlement_for(&report, finished.id, now, next_failures),
+            Ok(report) => {
+                let settlement = self.settlement_for(&report, finished.id, now, next_failures);
+                (settlement, note_for(&report.result), report.attachment)
+            }
+        };
+
+        let journal = JournalAppend {
+            kind: finished.kind,
+            run_no: finished.run_no,
+            recorded_at: now,
+            outcome: journal_outcome_for(&settlement),
+            note,
+            attachment,
         };
 
         self.store
-            .settle(finished.id, &self.identity, settlement)
+            .settle(finished.id, &self.identity, settlement, journal)
             .await?;
         Ok(())
     }
@@ -376,8 +408,41 @@ where
 /// The result of one finished handler task, carrying what settlement needs.
 struct FinishedRun {
     id: Ulid,
+    kind: String,
+    run_no: i32,
     failure_count: i32,
     report: Result<RunReport, Error>,
+}
+
+/// The journal outcome that corresponds to a settlement transition.
+fn journal_outcome_for(settlement: &Settlement) -> JournalOutcome {
+    match settlement {
+        Settlement::Complete { .. } => JournalOutcome::Completed,
+        Settlement::Pause { .. } => JournalOutcome::Paused,
+        Settlement::Retry { .. } => JournalOutcome::Retried,
+        Settlement::Dead { .. } => JournalOutcome::Dead,
+        Settlement::Release { .. } => JournalOutcome::Released,
+    }
+}
+
+/// The journal note for a run: the outcome's note on success or pause, the error
+/// message on failure.
+fn note_for(result: &Result<Outcome, crate::outcome::TaskError>) -> Option<String> {
+    match result {
+        Ok(Outcome::Completed { note }) | Ok(Outcome::Pause { note, .. }) => note.clone(),
+        Err(error) => Some(error.message().to_owned()),
+    }
+}
+
+/// Project a stored journal record into the read-only view a handler sees.
+fn record_to_entry(record: JournalRecord) -> JournalEntry {
+    JournalEntry::new(
+        record.run_no.max(0) as u32,
+        record.recorded_at,
+        record.outcome,
+        record.note,
+        record.attachment,
+    )
 }
 
 /// Add a `std::time::Duration` to a UTC instant, saturating on overflow.

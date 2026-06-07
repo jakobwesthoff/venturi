@@ -7,15 +7,17 @@
 //! a configurable prefix, letting several independent queues share one database.
 
 mod migrations;
+mod notify;
 mod rows;
 
 use crate::error::Error;
 use crate::store::{
-    JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Settlement, Store,
+    JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Notifier, Settlement, Store,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Pool;
+use notify::PgNotifier;
 use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
 use std::time::Duration;
 use tokio_postgres::Client;
@@ -30,6 +32,9 @@ use ulid::Ulid;
 pub struct PostgresStore {
     pool: Pool,
     prefix: String,
+    // Connection string for the dedicated LISTEN connection; `None` means a
+    // worker over this store relies on polling for newly enqueued work.
+    listen_dsn: Option<String>,
 }
 
 impl PostgresStore {
@@ -43,7 +48,24 @@ impl PostgresStore {
     pub fn new(pool: Pool, prefix: impl Into<String>) -> Result<Self, Error> {
         let prefix = prefix.into();
         validate_prefix(&prefix)?;
-        Ok(PostgresStore { pool, prefix })
+        Ok(PostgresStore {
+            pool,
+            prefix,
+            listen_dsn: None,
+        })
+    }
+
+    /// Enable push wakeups by giving the worker a connection string for a
+    /// dedicated `LISTEN` connection.
+    ///
+    /// Enqueues emit a `NOTIFY` regardless; this is what lets a worker *receive*
+    /// them and react immediately instead of at the next poll. The connection is
+    /// `NoTls`; without this, the worker still picks up new work within its poll
+    /// interval. The `dsn` is a standard libpq/`tokio_postgres` connection string.
+    #[must_use]
+    pub fn with_listen(mut self, dsn: impl Into<String>) -> Self {
+        self.listen_dsn = Some(dsn.into());
+        self
     }
 
     /// The configured table-name prefix.
@@ -54,6 +76,11 @@ impl PostgresStore {
     /// The underlying connection pool, for callers that share it.
     pub fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// The `NOTIFY`/`LISTEN` channel for this prefix.
+    fn channel(&self) -> String {
+        format!("{}_jobs", self.prefix)
     }
 }
 
@@ -107,6 +134,11 @@ impl Store for PostgresStore {
             ],
         )
         .await?;
+
+        // Wake any listening worker. Harmless when nobody listens; the payload is
+        // empty because the worker re-queries on any wakeup.
+        conn.execute("SELECT pg_notify($1, '')", &[&self.channel()])
+            .await?;
         Ok(())
     }
 
@@ -261,6 +293,24 @@ impl Store for PostgresStore {
         let conn = self.pool.get().await?;
         let rows = conn.query(&sql, &[&id.to_string()]).await?;
         rows.iter().map(journal_from_row).collect()
+    }
+
+    async fn next_visible_at(&self, kinds: &[String]) -> Result<Option<DateTime<Utc>>, Error> {
+        let sql = format!(
+            "SELECT min(visible_at) FROM {prefix}_jobs \
+             WHERE status = 'pending' AND kind = ANY($1) AND visible_at > now()",
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        let row = conn.query_one(&sql, &[&kinds]).await?;
+        Ok(row.get(0))
+    }
+
+    async fn notifier(&self) -> Result<Box<dyn Notifier>, Error> {
+        match &self.listen_dsn {
+            Some(dsn) => Ok(Box::new(PgNotifier::connect(dsn, &self.channel()).await?)),
+            None => Ok(Box::new(crate::store::NeverNotifier)),
+        }
     }
 
     async fn find_stale(&self) -> Result<Vec<JobRecord>, Error> {

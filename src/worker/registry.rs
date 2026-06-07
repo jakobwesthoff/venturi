@@ -56,10 +56,12 @@ type ErasedRun<S> = Box<dyn Fn(RunInput<S>) -> RunFuture + Send + Sync>;
 /// A type-erased lease reader: deserialize a payload and read its `Task::lease`.
 type ErasedLease = Box<dyn Fn(&serde_json::Value) -> Option<Duration> + Send + Sync>;
 
-/// One registered kind: how to run it and how to read its per-task lease.
+/// One registered kind: how to run it, how to read its per-task lease, and its
+/// optional per-kind concurrency cap.
 struct Entry<S> {
     run: ErasedRun<S>,
     lease: ErasedLease,
+    cap: Option<usize>,
 }
 
 /// The set of handlers a worker can run, keyed by `KIND`.
@@ -78,11 +80,11 @@ where
         }
     }
 
-    /// Register a handler type.
+    /// Register a handler type with an optional per-kind concurrency cap.
     ///
     /// Re-registering the same `KIND` overwrites the prior entry; the `KIND`
     /// contract is one type per discriminator.
-    pub(crate) fn register<T>(&mut self)
+    pub(crate) fn register<T>(&mut self, cap: Option<usize>)
     where
         T: Handler<S>,
     {
@@ -91,13 +93,19 @@ where
             Entry {
                 run: erased_run::<T, S>(),
                 lease: erased_lease::<T>(),
+                cap,
             },
         );
     }
 
-    /// The registered kinds, which also form the claim filter.
+    /// The registered kinds, which also form the base claim filter.
     pub(crate) fn kinds(&self) -> Vec<String> {
         self.entries.keys().map(|k| (*k).to_owned()).collect()
+    }
+
+    /// The per-kind concurrency cap for `kind`, if one was set.
+    pub(crate) fn cap(&self, kind: &str) -> Option<usize> {
+        self.entries.get(kind).and_then(|entry| entry.cap)
     }
 
     /// Build the run future for a claimed job, or fail if its kind is unknown.
@@ -211,7 +219,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_runs_the_registered_handler() {
         let mut registry = Registry::new();
-        registry.register::<Ping>();
+        registry.register::<Ping>(None);
 
         let state = Arc::new(Sink::default());
         let report = registry

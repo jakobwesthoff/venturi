@@ -213,6 +213,24 @@ impl Store for FakeStore {
         Ok(entries)
     }
 
+    async fn next_visible_at(&self, kinds: &[String]) -> Result<Option<DateTime<Utc>>, Error> {
+        let now = Utc::now();
+        let soonest = self
+            .inner
+            .lock()
+            .expect("lock not poisoned")
+            .jobs
+            .values()
+            .filter(|job| {
+                job.status == Status::Pending
+                    && job.visible_at > now
+                    && kinds.iter().any(|k| k == &job.kind)
+            })
+            .map(|job| job.visible_at)
+            .min();
+        Ok(soonest)
+    }
+
     async fn find_stale(&self) -> Result<Vec<JobRecord>, Error> {
         let now = Utc::now();
         let guard = self.inner.lock().expect("lock not poisoned");

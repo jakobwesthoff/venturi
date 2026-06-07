@@ -24,12 +24,6 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-/// The unconstrained priority floor: `priority >= 0` admits every tier, so the
-/// claim is ordered strictly by priority then age. The anti-starvation rotation
-/// that raises this floor to reserve slots for lower tiers arrives in a later
-/// phase.
-const UNCONSTRAINED_FLOOR: i16 = 0;
-
 /// The default failure backstop: a high ceiling on retryable failures before a
 /// job is forced to dead. It is a failsafe against a task that never recognizes a
 /// permanent failure; a task is expected to end itself sooner via
@@ -38,6 +32,16 @@ const DEFAULT_BACKSTOP: u32 = 20;
 
 /// The worker-level proportional jitter fraction applied to retry delays.
 const DEFAULT_JITTER_FRACTION: f64 = 0.5;
+
+/// The default anti-starvation ratio: higher tiers are favoured by roughly this
+/// per tier, while lower tiers keep a guaranteed share.
+const DEFAULT_PRIORITY_RATIO: u32 = 4;
+
+/// The priority floors, by numeric tier, used by the rotation: 0 admits all
+/// tiers (high-first), 1 reserves a claim for Normal and Low, 2 for Low only.
+const FLOOR_ALL: i16 = 0;
+const FLOOR_NORMAL: i16 = 1;
+const FLOOR_LOW: i16 = 2;
 
 /// Worker configuration, all set at construction with conservative defaults.
 #[derive(Debug, Clone)]
@@ -49,6 +53,7 @@ struct WorkerConfig {
     backoff: Backoff,
     jitter_fraction: f64,
     backstop: Option<u32>,
+    priority_ratio: Option<u32>,
 }
 
 impl Default for WorkerConfig {
@@ -61,6 +66,7 @@ impl Default for WorkerConfig {
             backoff: Backoff::default(),
             jitter_fraction: DEFAULT_JITTER_FRACTION,
             backstop: Some(DEFAULT_BACKSTOP),
+            priority_ratio: Some(DEFAULT_PRIORITY_RATIO),
         }
     }
 }
@@ -96,7 +102,24 @@ where
     where
         T: Handler<S>,
     {
-        self.registry.register::<T>();
+        self.registry.register::<T>(None);
+        self
+    }
+
+    /// Register a handler type with a per-kind concurrency cap of `max`.
+    ///
+    /// The worker runs at most `max` jobs of this kind at once, typically because
+    /// each holds a slot in a small local resource. The cap is local to this
+    /// worker; across several workers the effective limit is `max` times the
+    /// number of workers. At-cap kinds are excluded from claiming until one of
+    /// their in-flight jobs settles, so their jobs stay pending rather than
+    /// claimed-and-idle.
+    #[must_use]
+    pub fn register_capped<T>(mut self, max: usize) -> Self
+    where
+        T: Handler<S>,
+    {
+        self.registry.register::<T>(Some(max.max(1)));
         self
     }
 
@@ -151,6 +174,18 @@ where
         self
     }
 
+    /// The anti-starvation ratio for priority scheduling.
+    ///
+    /// `Some(r)` favours higher tiers by roughly `r` per tier while guaranteeing
+    /// lower tiers a nonzero share, by periodically reserving a claim for them.
+    /// `None` is strict priority: higher tiers always win and a sustained stream
+    /// of them can starve lower tiers indefinitely. Defaults to `Some(4)`.
+    #[must_use]
+    pub fn priority_ratio(mut self, ratio: Option<u32>) -> Self {
+        self.config.priority_ratio = ratio;
+        self
+    }
+
     /// Finish building the worker.
     pub fn build(self) -> Worker<S> {
         Worker {
@@ -196,10 +231,24 @@ where
             return;
         }
 
+        // The dedicated wakeup source. A backend without push notification gives a
+        // notifier that never fires, leaving the bounded poll to pick up new work.
+        let mut notifier = match self.store.notifier().await {
+            Ok(notifier) => notifier,
+            Err(error) => {
+                tracing::warn!(%error, "could not set up notifications; polling only");
+                Box::new(crate::store::NeverNotifier)
+            }
+        };
+
         let mut running: JoinSet<FinishedRun> = JoinSet::new();
         // Track the job behind each in-flight task so a forced shutdown can
         // release the stragglers it has to abort.
         let mut inflight: HashMap<tokio::task::Id, InflightJob> = HashMap::new();
+        // Per-kind in-flight counts, to honour per-kind concurrency caps.
+        let mut by_kind: HashMap<String, usize> = HashMap::new();
+        // The anti-starvation claim counter driving the priority-floor rotation.
+        let mut claim_counter: u64 = 0;
 
         'outer: loop {
             // Recover abandoned claims first, returning their work to the pool.
@@ -211,19 +260,21 @@ where
                 if shutdown.is_cancelled() {
                     break 'outer;
                 }
-                match self
-                    .store
-                    .claim_next(
-                        &kinds,
-                        UNCONSTRAINED_FLOOR,
-                        self.config.lease,
-                        &self.identity,
-                    )
-                    .await
-                {
+
+                // Exclude kinds at their per-kind cap so their jobs stay pending.
+                let claimable = self.claimable_kinds(&kinds, &by_kind);
+                if claimable.is_empty() {
+                    break;
+                }
+
+                claim_counter = claim_counter.wrapping_add(1);
+                let floor = floor_for(claim_counter, self.config.priority_ratio);
+
+                match self.claim_with_fallback(&claimable, floor).await {
                     Ok(Some(job)) => {
                         self.apply_task_lease(&job).await;
                         let history = self.history_for(job.id).await;
+                        *by_kind.entry(job.kind.clone()).or_insert(0) += 1;
                         let tracked = InflightJob {
                             id: job.id,
                             kind: job.kind.clone(),
@@ -242,27 +293,77 @@ where
                 }
             }
 
-            // Wait for the soonest of: a handler finishing, the poll interval, or
-            // shutdown. The NOTIFY-driven wakeup and the next-visible-at timeout
-            // arrive in a later phase; for now a bounded poll picks up new work.
-            let poll = self.config.poll_max.min(Duration::from_millis(200));
+            // Wait for the soonest of: a handler finishing, a notification, the
+            // next future-visible job becoming eligible, or shutdown.
+            let wait = self.wait_duration(&kinds).await;
             if running.is_empty() {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
-                    _ = tokio::time::sleep(poll) => {}
+                    _ = notifier.recv() => {}
+                    _ = tokio::time::sleep(wait) => {}
                 }
             } else {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
                     Some(joined) = running.join_next_with_id() => {
-                        self.reap(joined, &mut inflight).await;
+                        self.reap(joined, &mut inflight, &mut by_kind).await;
                     }
-                    _ = tokio::time::sleep(poll) => {}
+                    _ = notifier.recv() => {}
+                    _ = tokio::time::sleep(wait) => {}
                 }
             }
         }
 
-        self.drain(running, inflight).await;
+        self.drain(running, inflight, by_kind).await;
+    }
+
+    /// The registered kinds whose in-flight count is below their per-kind cap.
+    /// Uncapped kinds are always included.
+    fn claimable_kinds(&self, kinds: &[String], by_kind: &HashMap<String, usize>) -> Vec<String> {
+        kinds
+            .iter()
+            .filter(|kind| match self.registry.cap(kind) {
+                Some(cap) => by_kind.get(*kind).copied().unwrap_or(0) < cap,
+                None => true,
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Claim at `floor`, falling back to an unconstrained claim if a reserved
+    /// lower-tier claim finds nothing, so a reserved slot is never wasted.
+    async fn claim_with_fallback(
+        &self,
+        kinds: &[String],
+        floor: i16,
+    ) -> Result<Option<crate::store::JobRecord>, Error> {
+        let claimed = self
+            .store
+            .claim_next(kinds, floor, self.config.lease, &self.identity)
+            .await?;
+        if claimed.is_some() || floor == FLOOR_ALL {
+            return Ok(claimed);
+        }
+        self.store
+            .claim_next(kinds, FLOOR_ALL, self.config.lease, &self.identity)
+            .await
+    }
+
+    /// How long to sleep when the loop cannot make progress by claiming: the
+    /// soonest future eligibility among the worker's kinds, bounded by `poll_max`.
+    async fn wait_duration(&self, kinds: &[String]) -> Duration {
+        let until_next = match self.store.next_visible_at(kinds).await {
+            Ok(Some(at)) => (at - Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO)
+                .max(Duration::from_millis(5)),
+            Ok(None) => self.config.poll_max,
+            Err(error) => {
+                tracing::warn!(%error, "could not compute next eligibility; using poll_max");
+                self.config.poll_max
+            }
+        };
+        until_next.min(self.config.poll_max)
     }
 
     /// Drain on shutdown: the cancel signal is already raised, so give handlers
@@ -273,6 +374,7 @@ where
         &self,
         mut running: JoinSet<FinishedRun>,
         mut inflight: HashMap<tokio::task::Id, InflightJob>,
+        mut by_kind: HashMap<String, usize>,
     ) {
         let deadline = tokio::time::sleep(self.config.shutdown_timeout);
         tokio::pin!(deadline);
@@ -280,7 +382,7 @@ where
         while !running.is_empty() {
             tokio::select! {
                 joined = running.join_next_with_id() => match joined {
-                    Some(result) => self.reap(result, &mut inflight).await,
+                    Some(result) => self.reap(result, &mut inflight, &mut by_kind).await,
                     None => break,
                 },
                 _ = &mut deadline => {
@@ -411,16 +513,19 @@ where
             .id()
     }
 
-    /// Handle one joined task: drop its in-flight tracking and settle it, or log a
-    /// lost panic.
+    /// Handle one joined task: drop its in-flight tracking (including its per-kind
+    /// count) and settle it, or log a lost panic.
     async fn reap(
         &self,
         joined: Result<(tokio::task::Id, FinishedRun), tokio::task::JoinError>,
         inflight: &mut HashMap<tokio::task::Id, InflightJob>,
+        by_kind: &mut HashMap<String, usize>,
     ) {
         match joined {
             Ok((task_id, finished)) => {
-                inflight.remove(&task_id);
+                if let Some(job) = inflight.remove(&task_id) {
+                    release_slot(by_kind, &job.kind);
+                }
                 if let Err(error) = self.settle(finished).await {
                     tracing::warn!(%error, "settle failed");
                 }
@@ -428,7 +533,9 @@ where
             Err(join_error) => {
                 // A panicked or aborted handler does not settle itself. Drop its
                 // tracking; the job stays claimed and is recovered by lease expiry.
-                inflight.remove(&join_error.id());
+                if let Some(job) = inflight.remove(&join_error.id()) {
+                    release_slot(by_kind, &job.kind);
+                }
                 tracing::error!(%join_error, "handler task did not complete cleanly");
             }
         }
@@ -588,6 +695,38 @@ fn note_for(result: &Result<Outcome, crate::outcome::TaskError>) -> Option<Strin
     }
 }
 
+/// The priority floor for a claim, given the rotation counter and ratio.
+///
+/// With ratio `r`, most claims are unconstrained (high-first); every `r`-th claim
+/// reserves a slot for Normal and Low by excluding High, and every `r²`-th claim
+/// reserves one for Low only. `None`, or a ratio below 2, is strict priority: no
+/// reservation, so a sustained stream of high-priority work can starve lower tiers.
+fn floor_for(counter: u64, ratio: Option<u32>) -> i16 {
+    match ratio {
+        Some(r) if r >= 2 => {
+            let r = u64::from(r);
+            if counter.is_multiple_of(r * r) {
+                FLOOR_LOW
+            } else if counter.is_multiple_of(r) {
+                FLOOR_NORMAL
+            } else {
+                FLOOR_ALL
+            }
+        }
+        _ => FLOOR_ALL,
+    }
+}
+
+/// Decrement a kind's in-flight count, removing the entry when it reaches zero.
+fn release_slot(by_kind: &mut HashMap<String, usize>, kind: &str) {
+    if let Some(count) = by_kind.get_mut(kind) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            by_kind.remove(kind);
+        }
+    }
+}
+
 /// Add a `std::time::Duration` to a UTC instant, saturating on overflow.
 fn add_duration(now: DateTime<Utc>, delta: Duration) -> DateTime<Utc> {
     match chrono::Duration::from_std(delta) {
@@ -703,6 +842,83 @@ mod tests {
         let worker: Worker<Counters> = Worker::builder(Counters::new(), Arc::new(store)).build();
         // Should return without needing a shutdown signal.
         worker.run(CancellationToken::new()).await;
+    }
+
+    #[test]
+    fn floor_rotation_reserves_lower_tiers() {
+        // Ratio 2: every 2nd claim reserves Normal/Low, every 4th reserves Low.
+        assert_eq!(floor_for(1, Some(2)), FLOOR_ALL);
+        assert_eq!(floor_for(2, Some(2)), FLOOR_NORMAL);
+        assert_eq!(floor_for(3, Some(2)), FLOOR_ALL);
+        assert_eq!(floor_for(4, Some(2)), FLOOR_LOW);
+        // Strict priority never reserves.
+        assert_eq!(floor_for(2, None), FLOOR_ALL);
+        assert_eq!(floor_for(4, None), FLOOR_ALL);
+        assert_eq!(floor_for(4, Some(1)), FLOOR_ALL);
+    }
+
+    // --- Per-kind concurrency caps (P6) ---
+
+    #[derive(Clone)]
+    struct CapState {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        ran: Arc<AtomicUsize>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Capped;
+
+    impl crate::task::Task for Capped {
+        const KIND: &'static str = "capped";
+        type Carry = ();
+    }
+
+    impl Handler<CapState> for Capped {
+        async fn handle(
+            &self,
+            _ctx: &mut Context<()>,
+            state: &CapState,
+        ) -> Result<Outcome, TaskError> {
+            let now = state.active.fetch_add(1, Ordering::SeqCst) + 1;
+            state.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            state.active.fetch_sub(1, Ordering::SeqCst);
+            state.ran.fetch_add(1, Ordering::SeqCst);
+            Ok(Outcome::completed())
+        }
+    }
+
+    #[tokio::test]
+    async fn per_kind_cap_bounds_in_flight_below_concurrency() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        for _ in 0..8 {
+            queue.enqueue(Capped).await.expect("enqueue");
+        }
+
+        let state = CapState {
+            active: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+            ran: Arc::new(AtomicUsize::new(0)),
+        };
+        // Concurrency 8, but the kind is capped at 2.
+        let worker = Worker::builder(state.clone(), Arc::new(store.clone()))
+            .concurrency(8)
+            .register_capped::<Capped>(2)
+            .build();
+
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+        wait_until(|| state.ran.load(Ordering::SeqCst) == 8).await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+
+        assert!(
+            state.peak.load(Ordering::SeqCst) <= 2,
+            "peak in-flight {} exceeded the cap of 2",
+            state.peak.load(Ordering::SeqCst)
+        );
     }
 
     // --- Settlement routing (P2) ---

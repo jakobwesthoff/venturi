@@ -29,6 +29,8 @@ pub struct TestDb {
     // Held only to keep the container running for the lifetime of the pool.
     _container: ContainerAsync<Postgres>,
     pool: Pool,
+    host: String,
+    port: u16,
 }
 
 impl TestDb {
@@ -51,7 +53,7 @@ impl TestDb {
 
         // The default `postgres` image uses these well-known credentials.
         let mut config = Config::new();
-        config.host = Some(host);
+        config.host = Some(host.clone());
         config.port = Some(port);
         config.user = Some("postgres".to_owned());
         config.password = Some("postgres".to_owned());
@@ -64,12 +66,23 @@ impl TestDb {
         TestDb {
             _container: container,
             pool,
+            host,
+            port,
         }
     }
 
     /// The connection pool for this container.
     pub fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// A `tokio_postgres` connection string for this container, for the
+    /// `LISTEN`-based notifier.
+    pub fn dsn(&self) -> String {
+        format!(
+            "host={} port={} user=postgres password=postgres dbname=postgres",
+            self.host, self.port
+        )
     }
 
     /// Build a migrated [`PostgresStore`] over this container under `prefix`.

@@ -349,6 +349,23 @@ pub trait Store: Send + Sync {
     /// Load a job's journal in chronological order.
     async fn journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error>;
 
+    /// The soonest future eligibility time among pending jobs of the worker's
+    /// `kinds`, or `None` if none are scheduled for the future.
+    ///
+    /// The worker uses this to wake exactly when a delayed job (a backoff retry, a
+    /// paused job's resume, a scheduled enqueue) becomes claimable, rather than
+    /// only at the poll interval.
+    async fn next_visible_at(&self, kinds: &[String]) -> Result<Option<DateTime<Utc>>, Error>;
+
+    /// A notifier that wakes the worker when newly enqueued work may be available.
+    ///
+    /// The default is a notifier that never fires, leaving the worker to rely on
+    /// its bounded poll. The PostgreSQL adapter overrides this with a `LISTEN`
+    /// connection when configured for it.
+    async fn notifier(&self) -> Result<Box<dyn Notifier>, Error> {
+        Ok(Box::new(NeverNotifier))
+    }
+
     /// Find the deduplication candidate for `(kind, dedup_key)`: the oldest
     /// pending job sharing that key, or `None` if there is none.
     ///
@@ -413,4 +430,26 @@ pub struct MergePayload {
     pub payload: serde_json::Value,
     /// The serialized carry the surviving job should continue from.
     pub carry: serde_json::Value,
+}
+
+/// A wakeup source the worker awaits to learn that new work may be available.
+///
+/// A backend that supports push notification (the PostgreSQL adapter's `LISTEN`)
+/// returns one whose [`recv`](Notifier::recv) resolves on each notification; a
+/// backend without one uses the default [`NeverNotifier`].
+#[async_trait]
+pub trait Notifier: Send {
+    /// Resolve when newly enqueued work may be available. A spurious wakeup is
+    /// harmless: the worker simply re-checks the queue.
+    async fn recv(&mut self);
+}
+
+/// A [`Notifier`] that never fires, for backends without push notification.
+pub(crate) struct NeverNotifier;
+
+#[async_trait]
+impl Notifier for NeverNotifier {
+    async fn recv(&mut self) {
+        std::future::pending::<()>().await
+    }
 }

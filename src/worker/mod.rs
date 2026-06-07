@@ -13,7 +13,7 @@ use crate::backoff::{Backoff, retry_delay};
 use crate::context::JournalEntry;
 use crate::error::Error;
 use crate::outcome::Outcome;
-use crate::store::{JournalAppend, JournalOutcome, JournalRecord, Settlement, Store};
+use crate::store::{JournalAppend, JournalOutcome, Settlement, Store};
 use crate::task::Handler;
 use chrono::{DateTime, Utc};
 use registry::{Registry, RunInput, RunReport};
@@ -248,7 +248,7 @@ where
     /// failure by handing the handler an empty history rather than failing the run.
     async fn history_for(&self, id: Ulid) -> Vec<JournalEntry> {
         match self.store.journal(id).await {
-            Ok(records) => records.into_iter().map(record_to_entry).collect(),
+            Ok(records) => records.into_iter().map(JournalEntry::from_record).collect(),
             Err(error) => {
                 tracing::warn!(%error, "could not load job history; proceeding with none");
                 Vec::new()
@@ -432,17 +432,6 @@ fn note_for(result: &Result<Outcome, crate::outcome::TaskError>) -> Option<Strin
         Ok(Outcome::Completed { note }) | Ok(Outcome::Pause { note, .. }) => note.clone(),
         Err(error) => Some(error.message().to_owned()),
     }
-}
-
-/// Project a stored journal record into the read-only view a handler sees.
-fn record_to_entry(record: JournalRecord) -> JournalEntry {
-    JournalEntry::new(
-        record.run_no.max(0) as u32,
-        record.recorded_at,
-        record.outcome,
-        record.note,
-        record.attachment,
-    )
 }
 
 /// Add a `std::time::Duration` to a UTC instant, saturating on overflow.

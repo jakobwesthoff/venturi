@@ -29,20 +29,14 @@ pub struct JournalEntry {
 }
 
 impl JournalEntry {
-    /// Construct an entry. Used by the worker when loading history from storage.
-    pub(crate) fn new(
-        run_no: u32,
-        recorded_at: DateTime<Utc>,
-        outcome: JournalOutcome,
-        note: Option<String>,
-        attachment: Option<serde_json::Value>,
-    ) -> JournalEntry {
+    /// Project a stored journal record into the read-only view a handler sees.
+    pub(crate) fn from_record(record: crate::store::JournalRecord) -> JournalEntry {
         JournalEntry {
-            run_no,
-            recorded_at,
-            outcome,
-            note,
-            attachment,
+            run_no: record.run_no.max(0) as u32,
+            recorded_at: record.recorded_at,
+            outcome: record.outcome,
+            note: record.note,
+            attachment: record.attachment,
         }
     }
 

@@ -348,4 +348,38 @@ pub trait Store: Send + Sync {
 
     /// Load a job's journal in chronological order.
     async fn journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error>;
+
+    /// Find the deduplication candidate for `(kind, dedup_key)`: the oldest
+    /// pending job sharing that key, or `None` if there is none.
+    ///
+    /// The dedup index is non-unique, so several pending siblings may exist; this
+    /// returns the oldest, which the enqueue path passes to the task's `merge`.
+    async fn dedup_candidate(
+        &self,
+        kind: &str,
+        dedup_key: &str,
+    ) -> Result<Option<JobRecord>, Error>;
+
+    /// Apply a merge decision to a pending candidate, appending `journal`.
+    ///
+    /// `update` carries the new `(payload, carry)` for a Replace/With decision, or
+    /// is `None` for Keep (the existing row is left untouched but the merge is
+    /// still journaled). The write is guarded by the candidate still being
+    /// `pending`; if it has since been claimed or removed, nothing is written and
+    /// this returns `false` so the caller can fall back to a fresh enqueue.
+    async fn merge_into(
+        &self,
+        id: Ulid,
+        update: Option<MergePayload>,
+        journal: JournalAppend,
+    ) -> Result<bool, Error>;
+}
+
+/// The new payload and carry to write when applying a Replace or With merge.
+#[derive(Debug, Clone)]
+pub struct MergePayload {
+    /// The serialized payload the surviving job should carry.
+    pub payload: serde_json::Value,
+    /// The serialized carry the surviving job should continue from.
+    pub carry: serde_json::Value,
 }

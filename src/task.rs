@@ -136,6 +136,21 @@ pub struct Pending<T: Task> {
 }
 
 impl<T: Task> Pending<T> {
+    /// Build a view of an existing pending job. Used by the enqueue dedup flow.
+    pub(crate) fn new(
+        payload: T,
+        carry: T::Carry,
+        run_count: u32,
+        journal: Vec<JournalEntry>,
+    ) -> Pending<T> {
+        Pending {
+            payload,
+            carry,
+            run_count,
+            journal,
+        }
+    }
+
     /// The existing job's deserialized payload.
     pub fn payload(&self) -> &T {
         &self.payload

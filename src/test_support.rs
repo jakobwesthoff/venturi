@@ -9,7 +9,9 @@
 //! throughput.
 
 use crate::error::Error;
-use crate::store::{JobRecord, JournalAppend, JournalRecord, NewJob, Settlement, Status, Store};
+use crate::store::{
+    JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Settlement, Status, Store,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -209,6 +211,59 @@ impl Store for FakeStore {
             .collect();
         entries.sort_by_key(|entry| entry.id);
         Ok(entries)
+    }
+
+    async fn dedup_candidate(
+        &self,
+        kind: &str,
+        dedup_key: &str,
+    ) -> Result<Option<JobRecord>, Error> {
+        let guard = self.inner.lock().expect("lock not poisoned");
+        let candidate = guard
+            .jobs
+            .values()
+            .filter(|job| {
+                job.status == Status::Pending
+                    && job.kind == kind
+                    && job.dedup_key.as_deref() == Some(dedup_key)
+            })
+            .min_by_key(|job| (job.created_at, job.id))
+            .cloned();
+        Ok(candidate)
+    }
+
+    async fn merge_into(
+        &self,
+        id: Ulid,
+        update: Option<MergePayload>,
+        journal: JournalAppend,
+    ) -> Result<bool, Error> {
+        let mut guard = self.inner.lock().expect("lock not poisoned");
+        let Some(job) = guard.jobs.get_mut(&id) else {
+            return Ok(false);
+        };
+        if job.status != Status::Pending {
+            return Ok(false);
+        }
+
+        if let Some(MergePayload { payload, carry }) = update {
+            job.payload = payload;
+            job.carry = carry;
+        }
+
+        let entry_id = guard.next_journal_id;
+        guard.next_journal_id += 1;
+        guard.journal.push(JournalRecord {
+            id: entry_id,
+            job_id: id,
+            kind: journal.kind,
+            run_no: journal.run_no,
+            recorded_at: journal.recorded_at,
+            outcome: journal.outcome,
+            note: journal.note,
+            attachment: journal.attachment,
+        });
+        Ok(true)
     }
 }
 

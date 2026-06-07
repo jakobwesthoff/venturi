@@ -10,7 +10,9 @@ mod migrations;
 mod rows;
 
 use crate::error::Error;
-use crate::store::{JobRecord, JournalAppend, JournalRecord, NewJob, Settlement, Store};
+use crate::store::{
+    JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Settlement, Store,
+};
 use async_trait::async_trait;
 use deadpool_postgres::Pool;
 use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
@@ -258,6 +260,83 @@ impl Store for PostgresStore {
         let conn = self.pool.get().await?;
         let rows = conn.query(&sql, &[&id.to_string()]).await?;
         rows.iter().map(journal_from_row).collect()
+    }
+
+    async fn dedup_candidate(
+        &self,
+        kind: &str,
+        dedup_key: &str,
+    ) -> Result<Option<JobRecord>, Error> {
+        let sql = format!(
+            "SELECT {columns} FROM {prefix}_jobs \
+             WHERE kind = $1 AND dedup_key = $2 AND status = 'pending' \
+             ORDER BY created_at \
+             LIMIT 1",
+            columns = JOB_COLUMNS,
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        let row = conn.query_opt(&sql, &[&kind, &dedup_key]).await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
+    async fn merge_into(
+        &self,
+        id: Ulid,
+        update: Option<MergePayload>,
+        journal: JournalAppend,
+    ) -> Result<bool, Error> {
+        let id = id.to_string();
+        let mut conn = self.pool.get().await?;
+        let tx = conn.transaction().await?;
+
+        // Guard on the candidate still being pending. A Replace/With writes the
+        // new payload and carry; a Keep self-assigns `dedup_key` so the same
+        // guarded statement reports whether the candidate is still mergeable
+        // without changing it.
+        let affected = match update {
+            Some(MergePayload { payload, carry }) => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET payload = $2, carry = $3 \
+                     WHERE id = $1 AND status = 'pending'",
+                    prefix = self.prefix,
+                );
+                tx.execute(&sql, &[&id, &payload, &carry]).await?
+            }
+            None => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET dedup_key = dedup_key \
+                     WHERE id = $1 AND status = 'pending'",
+                    prefix = self.prefix,
+                );
+                tx.execute(&sql, &[&id]).await?
+            }
+        };
+
+        if affected > 0 {
+            let sql = format!(
+                "INSERT INTO {prefix}_journal \
+                 (job_id, kind, run_no, recorded_at, outcome, note, attachment) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                prefix = self.prefix,
+            );
+            tx.execute(
+                &sql,
+                &[
+                    &id,
+                    &journal.kind,
+                    &journal.run_no,
+                    &journal.recorded_at,
+                    &journal.outcome.as_str(),
+                    &journal.note,
+                    &journal.attachment,
+                ],
+            )
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(affected > 0)
     }
 }
 

@@ -7,12 +7,16 @@
 //! a configurable prefix, letting several independent queues share one database.
 
 mod migrations;
+mod rows;
 
 use crate::error::Error;
-use crate::store::Store;
+use crate::store::{JobRecord, NewJob, Settlement, Store};
 use async_trait::async_trait;
 use deadpool_postgres::Pool;
+use rows::{JOB_COLUMNS, job_from_row};
+use std::time::Duration;
 use tokio_postgres::Client;
+use ulid::Ulid;
 
 /// The PostgreSQL-backed storage adapter.
 ///
@@ -74,6 +78,142 @@ impl Store for PostgresStore {
             .await?;
 
         result
+    }
+
+    async fn enqueue(&self, job: &NewJob) -> Result<(), Error> {
+        let sql = format!(
+            "INSERT INTO {prefix}_jobs \
+             (id, kind, payload, priority, status, created_at, visible_at, \
+              run_count, failure_count, carry, dedup_key) \
+             VALUES ($1, $2, $3, $4, 'pending', $5, $6, 0, 0, $7, $8)",
+            prefix = self.prefix,
+        );
+
+        let conn = self.pool.get().await?;
+        conn.execute(
+            &sql,
+            &[
+                &job.id.to_string(),
+                &job.kind,
+                &job.payload,
+                &job.priority,
+                &job.created_at,
+                &job.visible_at,
+                &job.carry,
+                &job.dedup_key,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn claim_next(
+        &self,
+        kinds: &[String],
+        priority_floor: i16,
+        lease: Duration,
+        claimed_by: &str,
+    ) -> Result<Option<JobRecord>, Error> {
+        // One atomic statement: lock and mark the highest-priority oldest
+        // eligible row whose kind we handle, skipping rows another claimer holds.
+        // `visible_at <= now()` is the eligibility gate; the lease is stamped in
+        // database time so recovery is clock-consistent across hosts.
+        let sql = format!(
+            "UPDATE {prefix}_jobs SET \
+                 status = 'claimed', \
+                 claimed_by = $1, \
+                 claim_expires_at = now() + interval '1 second' * $2, \
+                 run_count = run_count + 1 \
+             WHERE id = ( \
+                 SELECT id FROM {prefix}_jobs \
+                 WHERE status = 'pending' \
+                   AND visible_at <= now() \
+                   AND kind = ANY($3) \
+                   AND priority >= $4 \
+                 ORDER BY priority, created_at \
+                 LIMIT 1 \
+                 FOR UPDATE SKIP LOCKED \
+             ) \
+             RETURNING {columns}",
+            prefix = self.prefix,
+            columns = JOB_COLUMNS,
+        );
+
+        let conn = self.pool.get().await?;
+        let lease_secs = lease.as_secs_f64();
+        let row = conn
+            .query_opt(&sql, &[&claimed_by, &lease_secs, &kinds, &priority_floor])
+            .await?;
+
+        row.as_ref().map(job_from_row).transpose()
+    }
+
+    async fn settle(
+        &self,
+        id: Ulid,
+        claimed_by: &str,
+        settlement: Settlement,
+    ) -> Result<bool, Error> {
+        // Every settlement clears the claim columns and is guarded by claim
+        // ownership, so a handler cannot settle a job another worker reclaimed.
+        let guard = "WHERE id = $1 AND claimed_by = $2 AND status = 'claimed'";
+        let id = id.to_string();
+
+        let conn = self.pool.get().await?;
+        let affected = match settlement {
+            Settlement::Complete { finished_at } => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET status = 'completed', finished_at = $3, \
+                         claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    prefix = self.prefix,
+                );
+                conn.execute(&sql, &[&id, &claimed_by, &finished_at])
+                    .await?
+            }
+            Settlement::Retry {
+                visible_at,
+                failure_count,
+            } => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
+                         failure_count = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    prefix = self.prefix,
+                );
+                conn.execute(&sql, &[&id, &claimed_by, &visible_at, &failure_count])
+                    .await?
+            }
+            Settlement::Pause { visible_at, carry } => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
+                         carry = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    prefix = self.prefix,
+                );
+                conn.execute(&sql, &[&id, &claimed_by, &visible_at, &carry])
+                    .await?
+            }
+            Settlement::Dead {
+                finished_at,
+                failure_count,
+            } => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET status = 'dead', finished_at = $3, \
+                         failure_count = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    prefix = self.prefix,
+                );
+                conn.execute(&sql, &[&id, &claimed_by, &finished_at, &failure_count])
+                    .await?
+            }
+            Settlement::Release { visible_at } => {
+                let sql = format!(
+                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
+                         claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    prefix = self.prefix,
+                );
+                conn.execute(&sql, &[&id, &claimed_by, &visible_at]).await?
+            }
+        };
+
+        Ok(affected > 0)
     }
 }
 

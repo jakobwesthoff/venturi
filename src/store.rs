@@ -16,6 +16,7 @@
 use crate::error::Error;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::time::Duration;
 use ulid::Ulid;
 
 // =============================================================================
@@ -219,6 +220,50 @@ pub struct NewJob {
     pub dedup_key: Option<String>,
 }
 
+/// A guarded settlement of a claimed job: the lifecycle transition to apply.
+///
+/// Every settlement is applied only if the worker still holds the claim (see
+/// [`Store::settle`]), so a slow or aborted handler cannot settle a job another
+/// worker has reclaimed. Journaling is layered on in a later phase; this enum is
+/// the job-row transition itself.
+#[derive(Debug, Clone)]
+pub enum Settlement {
+    /// The run completed the job: move to `completed` and stamp `finished_at`.
+    Complete {
+        /// Terminal timestamp.
+        finished_at: DateTime<Utc>,
+    },
+    /// A retryable failure: back to `pending`, eligible again at `visible_at`,
+    /// with `failure_count` bumped.
+    Retry {
+        /// When the job becomes eligible again (now + backoff).
+        visible_at: DateTime<Utc>,
+        /// The new failure count to store.
+        failure_count: i32,
+    },
+    /// A cooperative pause: back to `pending`, eligible at `visible_at`, carry
+    /// persisted, no failure recorded.
+    Pause {
+        /// When the job becomes eligible again (now + resume_in).
+        visible_at: DateTime<Utc>,
+        /// The carried state to persist for the next run.
+        carry: serde_json::Value,
+    },
+    /// A permanent give-up: move to `dead` and stamp `finished_at`.
+    Dead {
+        /// Terminal timestamp.
+        finished_at: DateTime<Utc>,
+        /// The new failure count to store.
+        failure_count: i32,
+    },
+    /// A clean shutdown release: back to `pending`, eligible immediately, not a
+    /// failure.
+    Release {
+        /// When the job becomes eligible again (typically now).
+        visible_at: DateTime<Utc>,
+    },
+}
+
 // =============================================================================
 // The backend trait
 // =============================================================================
@@ -240,4 +285,39 @@ pub trait Store: Send + Sync {
     /// Idempotent: applying twice is a no-op, and two backends with different
     /// prefixes migrate independently.
     async fn migrate(&self) -> Result<(), Error>;
+
+    /// Insert a brand-new pending job.
+    ///
+    /// This is the plain, non-deduplicating enqueue path; the dedup-aware path is
+    /// layered on in a later phase.
+    async fn enqueue(&self, job: &NewJob) -> Result<(), Error>;
+
+    /// Atomically claim the next eligible job among `kinds`, or `None` if there
+    /// is nothing claimable right now.
+    ///
+    /// Eligibility is `status = 'pending' AND visible_at <= now()`, ordered by
+    /// priority then age, restricted to `kinds` and to `priority >= priority_floor`
+    /// (the anti-starvation floor). Concurrent claimers skip each other's locked
+    /// rows. The claimed row's status becomes `claimed`, its `claimed_by` is set,
+    /// its `run_count` is incremented, and its lease expires after `lease`.
+    async fn claim_next(
+        &self,
+        kinds: &[String],
+        priority_floor: i16,
+        lease: Duration,
+        claimed_by: &str,
+    ) -> Result<Option<JobRecord>, Error>;
+
+    /// Apply a settlement to a claimed job, guarded by claim ownership.
+    ///
+    /// The write applies only if the row is still `claimed` by `claimed_by`.
+    /// Returns `true` if it applied and `false` if the guard did not match (the
+    /// job was reclaimed or already settled), so the caller can skip rather than
+    /// retry.
+    async fn settle(
+        &self,
+        id: Ulid,
+        claimed_by: &str,
+        settlement: Settlement,
+    ) -> Result<bool, Error>;
 }

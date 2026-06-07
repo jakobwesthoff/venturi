@@ -173,14 +173,19 @@ impl Store for PostgresStore {
             Settlement::Retry {
                 visible_at,
                 failure_count,
+                carry,
             } => {
                 let sql = format!(
                     "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
-                         failure_count = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
+                         failure_count = $4, carry = $5, claimed_by = NULL, \
+                         claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                conn.execute(&sql, &[&id, &claimed_by, &visible_at, &failure_count])
-                    .await?
+                conn.execute(
+                    &sql,
+                    &[&id, &claimed_by, &visible_at, &failure_count, &carry],
+                )
+                .await?
             }
             Settlement::Pause { visible_at, carry } => {
                 let sql = format!(

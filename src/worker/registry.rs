@@ -7,6 +7,7 @@
 //! it deserializes the payload back into that type, builds the typed context,
 //! runs `handle`, and serializes the (possibly mutated) carry back out.
 
+use crate::backoff::Backoff;
 use crate::context::{Context, JournalEntry};
 use crate::error::Error;
 use crate::outcome::{Outcome, TaskError};
@@ -39,6 +40,8 @@ pub(crate) struct RunReport {
     pub result: Result<Outcome, TaskError>,
     /// The serialized carry after the run, persisted on pause and retry.
     pub carry: serde_json::Value,
+    /// The task's per-task backoff override, if any, for scheduling a retry.
+    pub backoff: Option<Backoff>,
 }
 
 /// A boxed, `Send` future produced by dispatching one run.
@@ -109,10 +112,18 @@ where
             let mut ctx = Context::new(input.run_count, input.history, carry, input.cancel);
             let result = payload.handle(&mut ctx, &input.state).await;
 
+            // Capture the per-task backoff override before dropping the payload,
+            // so the worker can schedule a retry without the concrete type.
+            let backoff = payload.backoff();
+
             // The attachment is consumed once journaling lands; drop it for now.
             let (carry, _attachment) = ctx.into_parts();
             let carry = serde_json::to_value(carry)?;
-            Ok(RunReport { result, carry })
+            Ok(RunReport {
+                result,
+                carry,
+                backoff,
+            })
         })
     })
 }

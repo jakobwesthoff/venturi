@@ -234,12 +234,14 @@ pub enum Settlement {
         finished_at: DateTime<Utc>,
     },
     /// A retryable failure: back to `pending`, eligible again at `visible_at`,
-    /// with `failure_count` bumped.
+    /// with `failure_count` bumped and the carry persisted for the next run.
     Retry {
         /// When the job becomes eligible again (now + backoff).
         visible_at: DateTime<Utc>,
         /// The new failure count to store.
         failure_count: i32,
+        /// The carried state to persist for the next run.
+        carry: serde_json::Value,
     },
     /// A cooperative pause: back to `pending`, eligible at `visible_at`, carry
     /// persisted, no failure recorded.

@@ -9,6 +9,7 @@
 
 mod registry;
 
+use crate::backoff::{Backoff, retry_delay};
 use crate::error::Error;
 use crate::outcome::Outcome;
 use crate::store::{Settlement, Store};
@@ -27,12 +28,24 @@ use ulid::Ulid;
 /// phase.
 const UNCONSTRAINED_FLOOR: i16 = 0;
 
+/// The default failure backstop: a high ceiling on retryable failures before a
+/// job is forced to dead. It is a failsafe against a task that never recognizes a
+/// permanent failure; a task is expected to end itself sooner via
+/// `TaskError::permanent`.
+const DEFAULT_BACKSTOP: u32 = 20;
+
+/// The worker-level proportional jitter fraction applied to retry delays.
+const DEFAULT_JITTER_FRACTION: f64 = 0.5;
+
 /// Worker configuration, all set at construction with conservative defaults.
 #[derive(Debug, Clone)]
 struct WorkerConfig {
     concurrency: usize,
     poll_max: Duration,
     lease: Duration,
+    backoff: Backoff,
+    jitter_fraction: f64,
+    backstop: Option<u32>,
 }
 
 impl Default for WorkerConfig {
@@ -41,6 +54,9 @@ impl Default for WorkerConfig {
             concurrency: default_concurrency(),
             poll_max: Duration::from_secs(30),
             lease: Duration::from_secs(15 * 60),
+            backoff: Backoff::default(),
+            jitter_fraction: DEFAULT_JITTER_FRACTION,
+            backstop: Some(DEFAULT_BACKSTOP),
         }
     }
 }
@@ -101,6 +117,25 @@ where
     #[must_use]
     pub fn lease(mut self, d: Duration) -> Self {
         self.config.lease = d;
+        self
+    }
+
+    /// The worker-level default retry backoff (base and cap). A task may override
+    /// it through `Task::backoff`. Defaults to a 1-second base and 5-minute cap.
+    #[must_use]
+    pub fn backoff(mut self, backoff: Backoff) -> Self {
+        self.config.backoff = backoff;
+        self
+    }
+
+    /// The absolute backstop on retryable failures before a job is forced to dead.
+    ///
+    /// `Some(n)` caps a job at `n` failed executions; `None` disables the
+    /// backstop, leaving the give-up decision entirely to the task. Defaults to a
+    /// high value so a task's own `TaskError::permanent` is the primary mechanism.
+    #[must_use]
+    pub fn backstop(mut self, backstop: Option<u32>) -> Self {
+        self.config.backstop = backstop;
         self
     }
 
@@ -272,7 +307,7 @@ where
                     failure_count: next_failures,
                 }
             }
-            Ok(report) => self.settlement_for(&report, now, next_failures),
+            Ok(report) => self.settlement_for(&report, finished.id, now, next_failures),
         };
 
         self.store
@@ -283,11 +318,14 @@ where
 
     /// Route a successful run's outcome (or its failure) to a settlement.
     ///
-    /// The retry delay is a placeholder until the backoff phase supplies the
-    /// curve; the dead-on-permanent and pause paths are already their final shape.
+    /// A completion is terminal; a pause re-pends with the carry persisted and is
+    /// not a failure; a permanent error goes straight to dead. A retryable error
+    /// is rescheduled with the Fibonacci backoff and deterministic jitter, unless
+    /// it has reached the worker's failure backstop, which forces it to dead.
     fn settlement_for(
         &self,
         report: &RunReport,
+        id: Ulid,
         now: DateTime<Utc>,
         next_failures: i32,
     ) -> Settlement {
@@ -301,12 +339,36 @@ where
                 finished_at: now,
                 failure_count: next_failures,
             },
-            Err(_retryable) => Settlement::Retry {
-                // TODO(P2): apply the Fibonacci backoff curve and proportional
-                // jitter here instead of retrying immediately.
-                visible_at: now,
+            Err(_retryable) => self.retry_or_backstop(report, id, now, next_failures),
+        }
+    }
+
+    /// Schedule a retryable failure with backoff, or force it to dead once it
+    /// reaches the failure backstop.
+    fn retry_or_backstop(
+        &self,
+        report: &RunReport,
+        id: Ulid,
+        now: DateTime<Utc>,
+        next_failures: i32,
+    ) -> Settlement {
+        let attempt = next_failures.max(0) as u32;
+
+        if let Some(max) = self.config.backstop
+            && attempt >= max
+        {
+            return Settlement::Dead {
+                finished_at: now,
                 failure_count: next_failures,
-            },
+            };
+        }
+
+        let backoff = report.backoff.unwrap_or(self.config.backoff);
+        let delay = retry_delay(&backoff, self.config.jitter_fraction, attempt, id);
+        Settlement::Retry {
+            visible_at: add_duration(now, delay),
+            failure_count: next_failures,
+            carry: report.carry.clone(),
         }
     }
 }
@@ -433,5 +495,117 @@ mod tests {
         let worker: Worker<Counters> = Worker::builder(Counters::new(), Arc::new(store)).build();
         // Should return without needing a shutdown signal.
         worker.run(CancellationToken::new()).await;
+    }
+
+    // --- Settlement routing (P2) ---
+
+    /// A handler whose behaviour is chosen per run by the shared `Mode`.
+    #[derive(Clone)]
+    enum Mode {
+        AlwaysRetryable,
+        AlwaysPermanent,
+        PauseThenComplete,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Routed;
+
+    impl crate::task::Task for Routed {
+        const KIND: &'static str = "routed";
+        type Carry = u32;
+    }
+
+    impl Handler<Mode> for Routed {
+        async fn handle(&self, ctx: &mut Context<u32>, mode: &Mode) -> Result<Outcome, TaskError> {
+            match mode {
+                Mode::AlwaysRetryable => {
+                    Err(TaskError::retryable(std::io::Error::other("transient")))
+                }
+                Mode::AlwaysPermanent => Err(TaskError::permanent("gone for good")),
+                Mode::PauseThenComplete => {
+                    if *ctx.carry() == 0 {
+                        *ctx.carry_mut() = 1;
+                        Ok(Outcome::pause_in(Duration::ZERO))
+                    } else {
+                        Ok(Outcome::completed())
+                    }
+                }
+            }
+        }
+    }
+
+    async fn run_until<F: FnMut() -> bool>(
+        store: &FakeStore,
+        mode: Mode,
+        backstop: Option<u32>,
+        cond: F,
+    ) {
+        let worker = Worker::builder(mode, Arc::new(store.clone()))
+            .register::<Routed>()
+            .backstop(backstop)
+            .build();
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+        wait_until(cond).await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+    }
+
+    #[tokio::test]
+    async fn permanent_failure_goes_straight_to_dead() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Routed).await.expect("enqueue");
+
+        let store_for_cond = store.clone();
+        run_until(&store, Mode::AlwaysPermanent, Some(20), move || {
+            store_for_cond.count(crate::store::Status::Dead) == 1
+        })
+        .await;
+
+        let job = store.job(id).expect("job exists");
+        assert_eq!(job.status, crate::store::Status::Dead);
+        assert_eq!(job.failure_count, 1);
+        assert!(job.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn retryable_failures_reach_dead_at_the_backstop() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Routed).await.expect("enqueue");
+
+        // Backstop of 2: the first failure retries, the second forces dead. The
+        // first two attempts have zero backoff so this converges promptly.
+        let store_for_cond = store.clone();
+        run_until(&store, Mode::AlwaysRetryable, Some(2), move || {
+            store_for_cond.count(crate::store::Status::Dead) == 1
+        })
+        .await;
+
+        let job = store.job(id).expect("job exists");
+        assert_eq!(job.status, crate::store::Status::Dead);
+        assert_eq!(job.failure_count, 2);
+    }
+
+    #[tokio::test]
+    async fn pause_repends_without_failure_and_persists_carry() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Routed).await.expect("enqueue");
+
+        let store_for_cond = store.clone();
+        run_until(&store, Mode::PauseThenComplete, Some(20), move || {
+            store_for_cond.count(crate::store::Status::Completed) == 1
+        })
+        .await;
+
+        let job = store.job(id).expect("job exists");
+        assert_eq!(job.status, crate::store::Status::Completed);
+        // Two runs: the pause then the completion. The pause is not a failure.
+        assert_eq!(job.run_count, 2);
+        assert_eq!(job.failure_count, 0);
+        // The carry mutated during the paused run survived to the next run.
+        assert_eq!(job.carry, serde_json::json!(1));
     }
 }

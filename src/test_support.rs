@@ -28,6 +28,15 @@ impl FakeStore {
         FakeStore::default()
     }
 
+    /// Snapshot a job by id.
+    pub(crate) fn job(&self, id: Ulid) -> Option<JobRecord> {
+        self.inner
+            .lock()
+            .expect("lock not poisoned")
+            .get(&id)
+            .cloned()
+    }
+
     /// Count jobs currently in a given lifecycle state.
     pub(crate) fn count(&self, status: Status) -> usize {
         self.inner
@@ -134,10 +143,12 @@ impl Store for FakeStore {
             Settlement::Retry {
                 visible_at,
                 failure_count,
+                carry,
             } => {
                 job.status = Status::Pending;
                 job.visible_at = visible_at;
                 job.failure_count = failure_count;
+                job.carry = carry;
             }
             Settlement::Pause { visible_at, carry } => {
                 job.status = Status::Pending;

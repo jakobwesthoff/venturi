@@ -8,3 +8,38 @@ keywords = ["queue", "jobs", "postgres", "background", "worker"]
 categories = ["asynchronous", "database"]
 
 [dependencies]
+async-trait = "0.1.89"
+chrono = "0.4.45"
+deadpool-postgres = "0.14.1"
+metrics = { version = "0.24.6", optional = true }
+# `refinery`/`refinery-core` are pulled with default features off on purpose:
+# the `tokio-postgres` feature would force `native-tls`/`postgres-native-tls`
+# into the tree. We instead drive the runner by implementing refinery's async
+# migration traits over a `tokio_postgres::Client` ourselves (postgres module).
+refinery = { version = "0.9.1", default-features = false }
+refinery-core = { version = "0.9.1", default-features = false }
+rustls = "0.23.40"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+time = { version = "0.3.47", features = ["parsing", "formatting"] }
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-postgres = { version = "0.7.17", features = ["with-chrono-0_4", "with-serde_json-1"] }
+tokio-postgres-rustls = "0.14.0"
+tokio-util = "0.7.18"
+tracing = "0.1.44"
+ulid = { version = "1.2.1", features = ["serde"] }
+
+[features]
+default = ["postgres"]
+# The default PostgreSQL storage adapter (deadpool-postgres + refinery).
+postgres = []
+# Opt-in metric emission through the vendor-neutral `metrics` facade.
+metrics = ["dep:metrics"]
+
+[dev-dependencies]
+futures = "0.3.32"
+proptest = "1.11.0"
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tracing-subscriber = "0.3.23"

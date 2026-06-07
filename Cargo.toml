@@ -1,0 +1,10 @@
+[package]
+name = "venturi"
+version = "0.1.0"
+edition = "2024"
+description = "A durable, PostgreSQL-backed job queue for Rust — controlled flow from backlog to worker."
+license = "MIT"
+keywords = ["queue", "jobs", "postgres", "background", "worker"]
+categories = ["asynchronous", "database"]
+
+[dependencies]

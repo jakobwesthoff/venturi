@@ -213,6 +213,78 @@ impl Store for FakeStore {
         Ok(entries)
     }
 
+    async fn find_stale(&self) -> Result<Vec<JobRecord>, Error> {
+        let now = Utc::now();
+        let guard = self.inner.lock().expect("lock not poisoned");
+        let stale = guard
+            .jobs
+            .values()
+            .filter(|job| {
+                job.status == Status::Claimed
+                    && job.claim_expires_at.is_some_and(|expiry| expiry < now)
+            })
+            .cloned()
+            .collect();
+        Ok(stale)
+    }
+
+    async fn recover(
+        &self,
+        id: Ulid,
+        visible_at: DateTime<Utc>,
+        failure_count: i32,
+        journal: JournalAppend,
+    ) -> Result<bool, Error> {
+        let now = Utc::now();
+        let mut guard = self.inner.lock().expect("lock not poisoned");
+        let Some(job) = guard.jobs.get_mut(&id) else {
+            return Ok(false);
+        };
+        let expired = job.status == Status::Claimed
+            && job.claim_expires_at.is_some_and(|expiry| expiry < now);
+        if !expired {
+            return Ok(false);
+        }
+
+        job.status = Status::Pending;
+        job.visible_at = visible_at;
+        job.failure_count = failure_count;
+        job.claimed_by = None;
+        job.claim_expires_at = None;
+
+        let entry_id = guard.next_journal_id;
+        guard.next_journal_id += 1;
+        guard.journal.push(JournalRecord {
+            id: entry_id,
+            job_id: id,
+            kind: journal.kind,
+            run_no: journal.run_no,
+            recorded_at: journal.recorded_at,
+            outcome: journal.outcome,
+            note: journal.note,
+            attachment: journal.attachment,
+        });
+        Ok(true)
+    }
+
+    async fn extend_lease(
+        &self,
+        id: Ulid,
+        claimed_by: &str,
+        lease: Duration,
+    ) -> Result<bool, Error> {
+        let now = Utc::now();
+        let mut guard = self.inner.lock().expect("lock not poisoned");
+        let Some(job) = guard.jobs.get_mut(&id) else {
+            return Ok(false);
+        };
+        if job.status != Status::Claimed || job.claimed_by.as_deref() != Some(claimed_by) {
+            return Ok(false);
+        }
+        job.claim_expires_at = Some(add_duration(now, lease));
+        Ok(true)
+    }
+
     async fn dedup_candidate(
         &self,
         kind: &str,

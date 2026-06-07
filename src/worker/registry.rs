@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 /// Everything one run needs, in type-erased form.
@@ -52,9 +53,18 @@ type RunFuture = Pin<Box<dyn Future<Output = Result<RunReport, Error>> + Send>>;
 /// A type-erased run entry: build a run future from erased input.
 type ErasedRun<S> = Box<dyn Fn(RunInput<S>) -> RunFuture + Send + Sync>;
 
+/// A type-erased lease reader: deserialize a payload and read its `Task::lease`.
+type ErasedLease = Box<dyn Fn(&serde_json::Value) -> Option<Duration> + Send + Sync>;
+
+/// One registered kind: how to run it and how to read its per-task lease.
+struct Entry<S> {
+    run: ErasedRun<S>,
+    lease: ErasedLease,
+}
+
 /// The set of handlers a worker can run, keyed by `KIND`.
 pub(crate) struct Registry<S> {
-    entries: HashMap<&'static str, ErasedRun<S>>,
+    entries: HashMap<&'static str, Entry<S>>,
 }
 
 impl<S> Registry<S>
@@ -76,7 +86,13 @@ where
     where
         T: Handler<S>,
     {
-        self.entries.insert(T::KIND, erased_run::<T, S>());
+        self.entries.insert(
+            T::KIND,
+            Entry {
+                run: erased_run::<T, S>(),
+                lease: erased_lease::<T>(),
+            },
+        );
     }
 
     /// The registered kinds, which also form the claim filter.
@@ -86,11 +102,32 @@ where
 
     /// Build the run future for a claimed job, or fail if its kind is unknown.
     pub(crate) fn dispatch(&self, kind: &str, input: RunInput<S>) -> Result<RunFuture, Error> {
-        let run = self.entries.get(kind).ok_or_else(|| Error::UnknownKind {
+        let entry = self.entries.get(kind).ok_or_else(|| Error::UnknownKind {
             kind: kind.to_owned(),
         })?;
-        Ok(run(input))
+        Ok((entry.run)(input))
     }
+
+    /// The per-task lease override for a claimed job, if its kind is registered
+    /// and the task requests one. A payload that fails to deserialize yields
+    /// `None`; the run dispatch surfaces that failure.
+    pub(crate) fn lease_for(&self, kind: &str, payload: &serde_json::Value) -> Option<Duration> {
+        self.entries
+            .get(kind)
+            .and_then(|entry| (entry.lease)(payload))
+    }
+}
+
+/// Build the erased lease reader for one concrete task type.
+fn erased_lease<T>() -> ErasedLease
+where
+    T: crate::task::Task,
+{
+    Box::new(|payload: &serde_json::Value| {
+        serde_json::from_value::<T>(payload.clone())
+            .ok()
+            .and_then(|task| task.lease())
+    })
 }
 
 /// Build the erased run closure for one concrete handler type.

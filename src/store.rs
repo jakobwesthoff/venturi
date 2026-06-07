@@ -360,6 +360,37 @@ pub trait Store: Send + Sync {
         dedup_key: &str,
     ) -> Result<Option<JobRecord>, Error>;
 
+    /// Find claimed jobs whose lease has expired, for stale-claim recovery.
+    ///
+    /// Detection is timeout-only (`status = 'claimed' AND claim_expires_at <
+    /// now()`), with no process-liveness check, so it behaves identically on one
+    /// host or many. Implementations may bound the batch size.
+    async fn find_stale(&self) -> Result<Vec<JobRecord>, Error>;
+
+    /// Recover a stale claim, re-pending it as a failed execution and appending
+    /// `journal`.
+    ///
+    /// Guarded by the row still being claimed with an expired lease, so two
+    /// workers cannot both recover it. Returns whether this call recovered it.
+    async fn recover(
+        &self,
+        id: Ulid,
+        visible_at: DateTime<Utc>,
+        failure_count: i32,
+        journal: JournalAppend,
+    ) -> Result<bool, Error>;
+
+    /// Extend a claimed job's lease, guarded by claim ownership.
+    ///
+    /// Used to apply a per-task `Task::lease` override after the claim, which sets
+    /// only the worker default. Returns whether the lease was extended.
+    async fn extend_lease(
+        &self,
+        id: Ulid,
+        claimed_by: &str,
+        lease: Duration,
+    ) -> Result<bool, Error>;
+
     /// Apply a merge decision to a pending candidate, appending `journal`.
     ///
     /// `update` carries the new `(payload, carry)` for a Replace/With decision, or

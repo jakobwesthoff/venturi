@@ -17,6 +17,7 @@ use crate::store::{JournalAppend, JournalOutcome, Settlement, Store};
 use crate::task::Handler;
 use chrono::{DateTime, Utc};
 use registry::{Registry, RunInput, RunReport};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
@@ -44,6 +45,7 @@ struct WorkerConfig {
     concurrency: usize,
     poll_max: Duration,
     lease: Duration,
+    shutdown_timeout: Duration,
     backoff: Backoff,
     jitter_fraction: f64,
     backstop: Option<u32>,
@@ -55,6 +57,7 @@ impl Default for WorkerConfig {
             concurrency: default_concurrency(),
             poll_max: Duration::from_secs(30),
             lease: Duration::from_secs(15 * 60),
+            shutdown_timeout: Duration::from_secs(30),
             backoff: Backoff::default(),
             jitter_fraction: DEFAULT_JITTER_FRACTION,
             backstop: Some(DEFAULT_BACKSTOP),
@@ -118,6 +121,14 @@ where
     #[must_use]
     pub fn lease(mut self, d: Duration) -> Self {
         self.config.lease = d;
+        self
+    }
+
+    /// The grace window handlers get to wind down on a graceful shutdown before
+    /// stragglers are force-aborted and released. Defaults to 30 seconds.
+    #[must_use]
+    pub fn shutdown_timeout(mut self, d: Duration) -> Self {
+        self.config.shutdown_timeout = d;
         self
     }
 
@@ -186,8 +197,14 @@ where
         }
 
         let mut running: JoinSet<FinishedRun> = JoinSet::new();
+        // Track the job behind each in-flight task so a forced shutdown can
+        // release the stragglers it has to abort.
+        let mut inflight: HashMap<tokio::task::Id, InflightJob> = HashMap::new();
 
         'outer: loop {
+            // Recover abandoned claims first, returning their work to the pool.
+            self.recover_stale().await;
+
             // Fill every free slot, one claimed row per slot, until the queue has
             // nothing claimable right now or we are shutting down.
             while running.len() < self.config.concurrency {
@@ -205,8 +222,15 @@ where
                     .await
                 {
                     Ok(Some(job)) => {
+                        self.apply_task_lease(&job).await;
                         let history = self.history_for(job.id).await;
-                        self.spawn(&mut running, job, history, &shutdown);
+                        let tracked = InflightJob {
+                            id: job.id,
+                            kind: job.kind.clone(),
+                            run_no: job.run_count,
+                        };
+                        let task_id = self.spawn(&mut running, job, history, &shutdown);
+                        inflight.insert(task_id, tracked);
                     }
                     Ok(None) => break,
                     Err(error) => {
@@ -230,17 +254,48 @@ where
             } else {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
-                    Some(joined) = running.join_next() => self.reap(joined).await,
+                    Some(joined) = running.join_next_with_id() => {
+                        self.reap(joined, &mut inflight).await;
+                    }
                     _ = tokio::time::sleep(poll) => {}
                 }
             }
         }
 
-        // Drain: let the in-flight handlers run to completion and settle them.
-        // Cooperative cancellation and the forced-release deadline arrive in a
-        // later phase.
-        while let Some(joined) = running.join_next().await {
-            self.reap(joined).await;
+        self.drain(running, inflight).await;
+    }
+
+    /// Drain on shutdown: the cancel signal is already raised, so give handlers
+    /// `shutdown_timeout` to wind down on their own (typically a `Pause`,
+    /// settled normally); at the deadline, force-abort whatever remains and
+    /// release it so another worker can pick it up immediately.
+    async fn drain(
+        &self,
+        mut running: JoinSet<FinishedRun>,
+        mut inflight: HashMap<tokio::task::Id, InflightJob>,
+    ) {
+        let deadline = tokio::time::sleep(self.config.shutdown_timeout);
+        tokio::pin!(deadline);
+
+        while !running.is_empty() {
+            tokio::select! {
+                joined = running.join_next_with_id() => match joined {
+                    Some(result) => self.reap(result, &mut inflight).await,
+                    None => break,
+                },
+                _ = &mut deadline => {
+                    // Cooperative wind-down ran out of time; stop waiting.
+                    break;
+                }
+            }
+        }
+
+        // Abort any straggler and release its job. The ownership guard makes a
+        // release a no-op if the handler in fact settled in the meantime.
+        running.abort_all();
+        while running.join_next_with_id().await.is_some() {}
+        for (_, job) in inflight.drain() {
+            self.release(&job).await;
         }
     }
 
@@ -256,14 +311,74 @@ where
         }
     }
 
-    /// Spawn a claimed job's handler into the in-flight set.
+    /// Recover abandoned claims: re-pend each expired lease as a failed execution
+    /// with backoff and a `stale-recovered` journal entry. Runs opportunistically
+    /// at the start of each loop iteration, so the system self-heals without a
+    /// dedicated process.
+    async fn recover_stale(&self) {
+        let stale = match self.store.find_stale().await {
+            Ok(stale) => stale,
+            Err(error) => {
+                tracing::warn!(%error, "could not scan for stale claims");
+                return;
+            }
+        };
+
+        let now = Utc::now();
+        for job in stale {
+            let next_failures = job.failure_count.saturating_add(1);
+            let attempt = next_failures.max(0) as u32;
+            let delay = retry_delay(
+                &self.config.backoff,
+                self.config.jitter_fraction,
+                attempt,
+                job.id,
+            );
+            let note = format!(
+                "lease expired; worker {} presumed dead",
+                job.claimed_by.as_deref().unwrap_or("unknown"),
+            );
+            let journal = JournalAppend {
+                kind: job.kind.clone(),
+                run_no: job.run_count,
+                recorded_at: now,
+                outcome: JournalOutcome::StaleRecovered,
+                note: Some(note),
+                attachment: None,
+            };
+            if let Err(error) = self
+                .store
+                .recover(job.id, add_duration(now, delay), next_failures, journal)
+                .await
+            {
+                tracing::warn!(%error, "stale-claim recovery failed");
+            }
+        }
+    }
+
+    /// Apply a per-task lease override after the claim, which only stamps the
+    /// worker default. A no-op when the task uses the default.
+    async fn apply_task_lease(&self, job: &crate::store::JobRecord) {
+        let Some(lease) = self.registry.lease_for(&job.kind, &job.payload) else {
+            return;
+        };
+        if lease == self.config.lease {
+            return;
+        }
+        if let Err(error) = self.store.extend_lease(job.id, &self.identity, lease).await {
+            tracing::warn!(%error, "could not apply task lease override");
+        }
+    }
+
+    /// Spawn a claimed job's handler into the in-flight set, returning the spawned
+    /// task's id so the caller can track the job behind it.
     fn spawn(
         &self,
         running: &mut JoinSet<FinishedRun>,
         job: crate::store::JobRecord,
         history: Vec<JournalEntry>,
         shutdown: &CancellationToken,
-    ) {
+    ) -> tokio::task::Id {
         let id = job.id;
         let kind = job.kind.clone();
         let run_no = job.run_count;
@@ -279,34 +394,65 @@ where
         };
 
         let report = self.registry.dispatch(&kind, input);
-        running.spawn(async move {
-            let report = match report {
-                Ok(future) => future.await,
-                Err(error) => Err(error),
-            };
-            FinishedRun {
-                id,
-                kind,
-                run_no,
-                failure_count,
-                report,
-            }
-        });
+        running
+            .spawn(async move {
+                let report = match report {
+                    Ok(future) => future.await,
+                    Err(error) => Err(error),
+                };
+                FinishedRun {
+                    id,
+                    kind,
+                    run_no,
+                    failure_count,
+                    report,
+                }
+            })
+            .id()
     }
 
-    /// Handle one joined task: settle it, or log a lost panic.
-    async fn reap(&self, joined: Result<FinishedRun, tokio::task::JoinError>) {
+    /// Handle one joined task: drop its in-flight tracking and settle it, or log a
+    /// lost panic.
+    async fn reap(
+        &self,
+        joined: Result<(tokio::task::Id, FinishedRun), tokio::task::JoinError>,
+        inflight: &mut HashMap<tokio::task::Id, InflightJob>,
+    ) {
         match joined {
-            Ok(finished) => {
+            Ok((task_id, finished)) => {
+                inflight.remove(&task_id);
                 if let Err(error) = self.settle(finished).await {
                     tracing::warn!(%error, "settle failed");
                 }
             }
             Err(join_error) => {
-                // A panicked or aborted handler loses its identity here; the job
-                // stays claimed and is recovered by lease expiry in a later phase.
+                // A panicked or aborted handler does not settle itself. Drop its
+                // tracking; the job stays claimed and is recovered by lease expiry.
+                inflight.remove(&join_error.id());
                 tracing::error!(%join_error, "handler task did not complete cleanly");
             }
+        }
+    }
+
+    /// Release a job abandoned by a forced shutdown: back to pending immediately,
+    /// recorded as a `released` event, not a failure. Guarded by claim ownership.
+    async fn release(&self, job: &InflightJob) {
+        let now = Utc::now();
+        let journal = JournalAppend {
+            kind: job.kind.clone(),
+            run_no: job.run_no,
+            recorded_at: now,
+            outcome: JournalOutcome::Released,
+            note: Some("released by graceful shutdown".to_owned()),
+            attachment: None,
+        };
+        let settlement = Settlement::Release { visible_at: now };
+        if let Err(error) = self
+            .store
+            .settle(job.id, &self.identity, settlement, journal)
+            .await
+        {
+            tracing::warn!(%error, "release failed");
         }
     }
 
@@ -412,6 +558,14 @@ struct FinishedRun {
     run_no: i32,
     failure_count: i32,
     report: Result<RunReport, Error>,
+}
+
+/// What the worker remembers about an in-flight job so it can release the job if
+/// a forced shutdown has to abort its handler.
+struct InflightJob {
+    id: Ulid,
+    kind: String,
+    run_no: i32,
 }
 
 /// The journal outcome that corresponds to a settlement transition.
@@ -640,6 +794,62 @@ mod tests {
         let job = store.job(id).expect("job exists");
         assert_eq!(job.status, crate::store::Status::Dead);
         assert_eq!(job.failure_count, 2);
+    }
+
+    // --- Graceful shutdown (P5) ---
+
+    /// A handler that checkpoints by pausing as soon as shutdown is signalled.
+    #[derive(Serialize, Deserialize)]
+    struct Cooperative;
+
+    impl crate::task::Task for Cooperative {
+        const KIND: &'static str = "cooperative";
+        type Carry = ();
+    }
+
+    impl Handler<()> for Cooperative {
+        async fn handle(&self, ctx: &mut Context<()>, _state: &()) -> Result<Outcome, TaskError> {
+            // Wait for shutdown, then wind down cleanly with a pause.
+            ctx.cancelled().await;
+            Ok(Outcome::pause_in(Duration::from_secs(1)))
+        }
+    }
+
+    #[tokio::test]
+    async fn cooperative_handler_settles_normally_on_shutdown() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Cooperative).await.expect("enqueue");
+
+        let worker = Worker::builder((), Arc::new(store.clone()))
+            .register::<Cooperative>()
+            .shutdown_timeout(Duration::from_secs(5))
+            .build();
+
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+
+        // Let the handler claim and begin awaiting, then ask for shutdown.
+        wait_until(|| {
+            store
+                .job(id)
+                .is_some_and(|j| j.status == crate::store::Status::Claimed)
+        })
+        .await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+
+        // It paused (the cooperative wind-down), so it is pending, not released.
+        let job = store.job(id).expect("job");
+        assert_eq!(job.status, crate::store::Status::Pending);
+        let journal = store
+            .journal(id)
+            .await
+            .expect("journal")
+            .into_iter()
+            .map(|e| e.outcome)
+            .collect::<Vec<_>>();
+        assert_eq!(journal, vec![crate::store::JournalOutcome::Paused]);
     }
 
     #[tokio::test]

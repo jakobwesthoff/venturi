@@ -14,6 +14,7 @@ use crate::store::{
     JobRecord, JournalAppend, JournalRecord, MergePayload, NewJob, Settlement, Store,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use deadpool_postgres::Pool;
 use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
 use std::time::Duration;
@@ -260,6 +261,87 @@ impl Store for PostgresStore {
         let conn = self.pool.get().await?;
         let rows = conn.query(&sql, &[&id.to_string()]).await?;
         rows.iter().map(journal_from_row).collect()
+    }
+
+    async fn find_stale(&self) -> Result<Vec<JobRecord>, Error> {
+        // Bound the batch so a large backlog of expired claims is recovered over
+        // several ticks rather than in one oversized statement.
+        let sql = format!(
+            "SELECT {columns} FROM {prefix}_jobs \
+             WHERE status = 'claimed' AND claim_expires_at < now() \
+             ORDER BY claim_expires_at \
+             LIMIT 100",
+            columns = JOB_COLUMNS,
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        let rows = conn.query(&sql, &[]).await?;
+        rows.iter().map(job_from_row).collect()
+    }
+
+    async fn recover(
+        &self,
+        id: Ulid,
+        visible_at: DateTime<Utc>,
+        failure_count: i32,
+        journal: JournalAppend,
+    ) -> Result<bool, Error> {
+        let id = id.to_string();
+        let mut conn = self.pool.get().await?;
+        let tx = conn.transaction().await?;
+
+        let update = format!(
+            "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $2, \
+                 failure_count = $3, claimed_by = NULL, claim_expires_at = NULL \
+             WHERE id = $1 AND status = 'claimed' AND claim_expires_at < now()",
+            prefix = self.prefix,
+        );
+        let affected = tx
+            .execute(&update, &[&id, &visible_at, &failure_count])
+            .await?;
+
+        if affected > 0 {
+            let insert = format!(
+                "INSERT INTO {prefix}_journal \
+                 (job_id, kind, run_no, recorded_at, outcome, note, attachment) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                prefix = self.prefix,
+            );
+            tx.execute(
+                &insert,
+                &[
+                    &id,
+                    &journal.kind,
+                    &journal.run_no,
+                    &journal.recorded_at,
+                    &journal.outcome.as_str(),
+                    &journal.note,
+                    &journal.attachment,
+                ],
+            )
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(affected > 0)
+    }
+
+    async fn extend_lease(
+        &self,
+        id: Ulid,
+        claimed_by: &str,
+        lease: Duration,
+    ) -> Result<bool, Error> {
+        let sql = format!(
+            "UPDATE {prefix}_jobs SET claim_expires_at = now() + interval '1 second' * $3 \
+             WHERE id = $1 AND claimed_by = $2 AND status = 'claimed'",
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        let affected = conn
+            .execute(&sql, &[&id.to_string(), &claimed_by, &lease.as_secs_f64()])
+            .await?;
+        Ok(affected > 0)
     }
 
     async fn dedup_candidate(

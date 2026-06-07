@@ -1,0 +1,4 @@
+/target
+
+# Internal research referencing proprietary sibling projects; never commit.
+/docs/research/

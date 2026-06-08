@@ -43,15 +43,15 @@ impl Backoff {
 }
 
 impl Default for Backoff {
-    /// The worker-level default: a one-second base climbing to a five-minute cap.
+    /// The worker-level default: a half-second base climbing to a two-minute cap.
     ///
     /// These are conservative starting points. With the Fibonacci curve the first
-    /// two retries are immediate, then the delay grows `1s, 2s, 4s, 7s, …` until
-    /// it reaches the five-minute ceiling.
+    /// two retries are immediate, then the delay grows `500ms, 1s, 2s, 3.5s, …`
+    /// until it reaches the two-minute ceiling.
     fn default() -> Backoff {
         Backoff {
-            base: Duration::from_secs(1),
-            cap: Duration::from_secs(5 * 60),
+            base: Duration::from_millis(500),
+            cap: Duration::from_secs(120),
         }
     }
 }
@@ -141,6 +141,13 @@ mod tests {
 
     fn fixed_id() -> Ulid {
         Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ULID")
+    }
+
+    #[test]
+    fn default_backoff_is_500ms_base_and_120s_cap() {
+        let backoff = Backoff::default();
+        assert_eq!(backoff.base(), Duration::from_millis(500));
+        assert_eq!(backoff.cap(), Duration::from_secs(120));
     }
 
     #[test]

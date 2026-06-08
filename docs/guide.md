@@ -246,7 +246,7 @@ A retryable failure is rescheduled by a Fibonacci backoff:
 climbs to the cap. Proportional jitter spreads the delay deterministically from
 the job's ULID, so the schedule is reproducible and pulls in no RNG.
 
-Defaults are a 1-second base and a 5-minute cap. Override per worker:
+Defaults are a 500ms base and a 2-minute cap. Override per worker:
 
 ```rust
 use venturi::Backoff;
@@ -471,7 +471,8 @@ points.
 | `poll_max(d)` | `30s` | Upper bound on the idle wait; a missed notification delays a job by at most this. |
 | `lease(d)` | `15m` | Claim lease; must exceed a handler's real runtime. `Task::lease` overrides per task. |
 | `shutdown_timeout(d)` | `30s` | Grace window before stragglers are force-released. |
-| `backoff(Backoff)` | base `1s`, cap `5m` | Retry curve. `Task::backoff` overrides per task. |
+| `backoff(Backoff)` | base `500ms`, cap `2m` | Retry curve. `Task::backoff` overrides per task. |
+| `jitter_fraction(f64)` | `0.5` | Proportional spread on retry delays, `[0.0, 1.0]`; `0.0` disables jitter. Clamped. |
 | `backstop(Option<u32>)` | high | Absolute failed-execution cap before dead; `None` disables. |
 | `priority_ratio(Option<u32>)` | `Some(4)` | Anti-starvation ratio; `None` is strict priority. |
 | `panic_policy(PanicPolicy)` | `Retry` | How a handler panic settles: `Retry` (failed execution, backoff, bounded by the backstop) or `Dead` (straight to dead). |

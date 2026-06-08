@@ -176,7 +176,7 @@ where
     }
 
     /// The worker-level default retry backoff (base and cap). A task may override
-    /// it through `Task::backoff`. Defaults to a 1-second base and 5-minute cap.
+    /// it through `Task::backoff`. Defaults to a 500ms base and 2-minute cap.
     #[must_use]
     pub fn backoff(mut self, backoff: Backoff) -> Self {
         self.config.backoff = backoff;
@@ -203,6 +203,19 @@ where
     #[must_use]
     pub fn priority_ratio(mut self, ratio: Option<u32>) -> Self {
         self.config.priority_ratio = ratio;
+        self
+    }
+
+    /// The proportional jitter applied to retry delays, in `[0.0, 1.0]`.
+    ///
+    /// A retry delay is spread into `[delay * (1 - fraction), delay]`,
+    /// deterministically from the job's id, so independently scheduled retries do
+    /// not thunder together. `0.0` disables jitter (exact backoff); `1.0` allows
+    /// the full range down to near-immediate. Defaults to `0.5`. Values outside the
+    /// range are clamped.
+    #[must_use]
+    pub fn jitter_fraction(mut self, fraction: f64) -> Self {
+        self.config.jitter_fraction = fraction.clamp(0.0, 1.0);
         self
     }
 
@@ -1249,5 +1262,57 @@ mod tests {
             .map(|e| e.outcome)
             .collect::<Vec<_>>();
         assert_eq!(outcomes, vec![crate::store::JournalOutcome::Dead]);
+    }
+
+    // --- Jitter fraction knob (P-worker-defaults) ---
+
+    #[tokio::test]
+    async fn jitter_fraction_zero_schedules_the_exact_backoff_delay() {
+        let store = FakeStore::new();
+        // A fixed id makes the deterministic jitter reproducible.
+        let id = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ULID");
+        let now = Utc::now();
+        let job = crate::store::NewJob {
+            id,
+            kind: "routed".to_owned(),
+            payload: serde_json::Value::Null,
+            priority: 1,
+            created_at: now,
+            visible_at: now,
+            carry: serde_json::json!(0),
+            dedup_key: None,
+        };
+        store.enqueue(&job).await.expect("enqueue");
+
+        // A 100s base makes the third attempt's delay (base * (fib(3) - 1) = base)
+        // large and non-zero, so any jitter would be plainly visible.
+        let backoff = Backoff::new(Duration::from_secs(100), Duration::from_secs(300));
+        let worker = Worker::builder(Mode::AlwaysRetryable, Arc::new(store.clone()))
+            .register::<Routed>()
+            .backoff(backoff)
+            .jitter_fraction(0.0)
+            .backstop(Some(50))
+            .build();
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+
+        // Attempts 1 and 2 are immediate; the third schedules the 100s delay and
+        // then the job sits ineligible, so the failure count settles at 3.
+        wait_until(|| store.job(id).is_some_and(|j| j.failure_count >= 3)).await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+
+        let job = store.job(id).expect("job exists");
+        let entries = store.journal(id).await.expect("journal");
+        let third = entries.last().expect("a third journal entry");
+        // settle stamps the journal `recorded_at` and the retry `visible_at` from
+        // one clock read, so their difference is exactly the scheduled delay.
+        let scheduled = (job.visible_at - third.recorded_at)
+            .to_std()
+            .expect("non-negative delay");
+        let expected = crate::backoff::retry_delay(&backoff, 0.0, 3, id);
+        assert_eq!(scheduled, expected);
+        // Jitter disabled means the full base curve, not a reduced delay.
+        assert_eq!(expected, Duration::from_secs(100));
     }
 }

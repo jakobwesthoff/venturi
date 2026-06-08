@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "A durable, PostgreSQL-backed job queue for Rust — controlled flow from backlog to worker."
 license = "MIT"
+repository = "https://github.com/jakobwesthoff/venturi"
+homepage = "https://westhoffswelt.de"
+documentation = "https://docs.rs/venturi"
 keywords = ["queue", "jobs", "postgres", "background", "worker"]
 categories = ["asynchronous", "database"]
 

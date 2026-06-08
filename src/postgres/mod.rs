@@ -130,6 +130,30 @@ impl PostgresStore {
     fn channel(&self) -> String {
         format!("{}_jobs", self.prefix)
     }
+
+    /// Queue a wakeup on this queue's channel within `tx`.
+    ///
+    /// Issued inside the caller's transaction so the NOTIFY is delivered on commit
+    /// and discarded on rollback, keeping the wakeup atomic with the row change
+    /// that produced it. The payload is empty: a woken worker re-queries its
+    /// claimable set rather than acting on the message contents.
+    async fn notify(&self, tx: &tokio_postgres::Transaction<'_>) -> Result<(), Error> {
+        tx.execute("SELECT pg_notify($1, '')", &[&self.channel()])
+            .await?;
+        Ok(())
+    }
+}
+
+/// Whether a settlement makes its job claimable again and so must wake workers.
+///
+/// Re-pending transitions (a retry, a pause's resume, a release back to the pool)
+/// return a job to the claimable set and need a wakeup; terminal ones (completed,
+/// dead) produce no claimable work and must not.
+fn notifies_on_repend(settlement: &Settlement) -> bool {
+    match settlement {
+        Settlement::Retry { .. } | Settlement::Pause { .. } | Settlement::Release { .. } => true,
+        Settlement::Complete { .. } | Settlement::Dead { .. } => false,
+    }
 }
 
 #[async_trait]
@@ -167,8 +191,12 @@ impl Store for PostgresStore {
             prefix = self.prefix,
         );
 
-        let conn = self.pool.get().await?;
-        conn.execute(
+        // Insert and wake in one transaction so the NOTIFY is delivered exactly
+        // when the row commits: a rollback discards both, and no committed row is
+        // ever left without its wakeup.
+        let mut conn = self.pool.get().await?;
+        let tx = conn.transaction().await?;
+        tx.execute(
             &sql,
             &[
                 &job.id.to_string(),
@@ -182,11 +210,8 @@ impl Store for PostgresStore {
             ],
         )
         .await?;
-
-        // Wake any listening worker. Harmless when nobody listens; the payload is
-        // empty because the worker re-queries on any wakeup.
-        conn.execute("SELECT pg_notify($1, '')", &[&self.channel()])
-            .await?;
+        self.notify(&tx).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -244,6 +269,8 @@ impl Store for PostgresStore {
         // journal never records a settlement that did not apply.
         let guard = "WHERE id = $1 AND claimed_by = $2 AND status = 'claimed'";
         let id = id.to_string();
+        // Classify before the match below consumes `settlement`.
+        let repends = notifies_on_repend(&settlement);
 
         let mut conn = self.pool.get().await?;
         let tx = conn.transaction().await?;
@@ -326,6 +353,12 @@ impl Store for PostgresStore {
                 ],
             )
             .await?;
+        }
+
+        // A re-pending settlement returns the job to the claimable set; wake
+        // workers within the same transaction so the notify commits with it.
+        if affected > 0 && repends {
+            self.notify(&tx).await?;
         }
 
         tx.commit().await?;
@@ -416,6 +449,12 @@ impl Store for PostgresStore {
                 ],
             )
             .await?;
+        }
+
+        // Recovery re-pends the abandoned job, so wake workers within the same
+        // transaction.
+        if affected > 0 {
+            self.notify(&tx).await?;
         }
 
         tx.commit().await?;
@@ -737,5 +776,30 @@ mod tests {
     fn advisory_lock_id_is_stable_and_distinct() {
         assert_eq!(advisory_lock_id("venturi"), advisory_lock_id("venturi"));
         assert_ne!(advisory_lock_id("venturi"), advisory_lock_id("other"));
+    }
+
+    #[test]
+    fn repending_settlements_notify_and_terminal_ones_do_not() {
+        let now = Utc::now();
+        let carry = serde_json::Value::Null;
+
+        // Re-pending: the job returns to the claimable set and workers must wake.
+        assert!(notifies_on_repend(&Settlement::Retry {
+            visible_at: now,
+            failure_count: 1,
+            carry: carry.clone(),
+        }));
+        assert!(notifies_on_repend(&Settlement::Pause {
+            visible_at: now,
+            carry,
+        }));
+        assert!(notifies_on_repend(&Settlement::Release { visible_at: now }));
+
+        // Terminal: no claimable work is produced, so no wakeup.
+        assert!(!notifies_on_repend(&Settlement::Complete { finished_at: now }));
+        assert!(!notifies_on_repend(&Settlement::Dead {
+            finished_at: now,
+            failure_count: 3,
+        }));
     }
 }

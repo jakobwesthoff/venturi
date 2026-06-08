@@ -19,11 +19,6 @@ here so none is lost. Confirm-or-change.
   `Merge::Independent`). Confirm "oldest" is the right pick vs. newest/any.
 - **`find_stale` batches at `LIMIT 100`** per recovery pass (recovered over
   several loop ticks). Confirm the batch size / that bounded recovery is fine.
-- **`NOTIFY` on enqueue is a separate statement** after the `INSERT`, not in the
-  same transaction (`PostgresStore::enqueue`). A crash between insert and notify
-  loses the notify, but the poll/`next_visible_at` fallback still picks the job
-  up. Tie-in with [[wakeup-notification-architecture]]; confirm acceptable or
-  fold the notify into the insert path / a trigger.
 - **Claim-latency metric = wait since `created_at`.** `observability::claimed`
   records `now - created_at` as "claim latency". Confirm that is the intended
   meaning (vs. time the claim query took, or wait since `visible_at`).

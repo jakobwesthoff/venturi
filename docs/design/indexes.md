@@ -14,7 +14,7 @@ indexes.
 
 | # | Access path | Filter / key | Order / aggregate | Index requirement | Source |
 |---|---|---|---|---|---|
-| 1 | Claim next eligible job | `status = 'pending' AND kind = ANY(kinds) AND visible_at <= now` | `priority ASC, created_at ASC`, `LIMIT 1 FOR UPDATE SKIP LOCKED` | Partial index `WHERE status = 'pending'` supporting the kind filter, the `visible_at` eligibility bound, and the `(priority, created_at)` ordering. | ADR 3, 20 |
+| 1 | Claim next eligible job | `status = 'pending' AND kind = ANY(kinds) AND visible_at <= now` | `priority ASC, created_at ASC`, `LIMIT 1 FOR UPDATE SKIP LOCKED` | Two complementary partial indexes `WHERE status = 'pending'`: `(kind, priority, created_at)` (selective when a worker's kinds are few or sparse) and `(priority, created_at)` (walks the claim's order so a multi-kind claim is an indexed top-1, not a sort of every candidate). The planner picks per query; `visible_at` is a residual in both. | ADR 3, 20 |
 | 2 | Soonest future eligibility | `status = 'pending' AND visible_at > now AND kind = ANY(kinds)` | `min(visible_at)` | Partial index `WHERE status = 'pending'` ordered by `visible_at` (to read the nearest future eligibility cheaply). May or may not combine with #1; reconcile in schema design. | ADR 20 |
 | 3 | Deduplication candidacy lookup | `kind = ? AND dedup_key = ? AND status = 'pending'` | one row | Partial index on `(kind, dedup_key)` `WHERE dedup_key IS NOT NULL AND status = 'pending'` (kept small: only pending, dedupable rows). | ADR 10 |
 | 4 | Stale-claim recovery | `status = 'claimed' AND claim_expires_at < now` | scan expired | Partial index on `claim_expires_at` `WHERE status = 'claimed'`. | ADR 19 |
@@ -37,6 +37,15 @@ indexes.
 - Entries #1 and #2 want different orderings of the same partial-pending set
   (`(priority, created_at)` vs `visible_at`); whether one composite index serves
   both or they are separate is a schema-design decision.
+- The claim keeps two partial indexes (entry #1) because a single `kind`-leading
+  index cannot serve the multi-kind claim well: with several kinds it cannot
+  produce the global `(priority, created_at)` order, so it gathers every matching
+  pending row and sorts the set (spilling to disk), and with many kinds the planner
+  drops the index for a sequential scan. `EXPLAIN ANALYZE` over a 200k-row pending
+  set across twelve kinds measured this at tens of milliseconds, against ~0.03 ms
+  once a `(priority, created_at)`-leading partial index let the claim walk in order
+  and stop at the first lockable match. The `kind`-leading index is retained for
+  workers whose kinds are sparse, where touching only those kinds' entries wins.
 - Introspection stats (ADR 25) are on-demand aggregate queries (counts by status
   and kind, oldest-pending age, in-flight and dead counts). They are not hot-path
   and reuse the claim and history indexes where applicable, otherwise scanning the

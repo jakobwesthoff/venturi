@@ -49,11 +49,25 @@ CREATE TABLE {{prefix}}_journal (
 -- Indexes: each realizes one access path.
 -- =============================================================================
 
--- Claim path: highest-priority oldest eligible row per kind. `visible_at` is
--- applied as a residual filter at claim time (a btree cannot both range-filter
--- it and preserve the priority/age ordering).
+-- Claim path. The claim selects the highest-priority oldest eligible row among a
+-- worker's kinds, ordered by `(priority, created_at)`. Two complementary partial
+-- indexes serve it, and the planner picks per query and statistics; `visible_at`
+-- is a residual filter in both (a btree cannot range-filter it and preserve the
+-- priority/age ordering).
+--
+-- The kind-leading index is selective when a worker handles few kinds or its
+-- kinds are sparse in the pending set: it touches only those kinds' entries.
 CREATE INDEX {{prefix}}_jobs_claim
     ON {{prefix}}_jobs (kind, priority, created_at)
+    WHERE status = 'pending';
+
+-- The priority-leading index walks rows in the claim's own `(priority,
+-- created_at)` order, so a multi-kind claim filters `kind` as a residual and stops
+-- at the first lockable match instead of collecting every candidate and sorting.
+-- This keeps the common multi-kind claim an indexed top-1 rather than a
+-- sort-the-whole-pending-set (or, for many kinds, a sequential scan).
+CREATE INDEX {{prefix}}_jobs_claim_priority
+    ON {{prefix}}_jobs (priority, created_at)
     WHERE status = 'pending';
 
 -- Soonest future eligibility, for the worker's wait timeout. Different ordering

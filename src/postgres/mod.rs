@@ -174,16 +174,22 @@ impl Store for PostgresStore {
         let result = migrations::apply(client, &self.prefix).await;
 
         // Release the lock regardless of the migration outcome, so a failed
-        // migration does not leave it held for the session. The migration result
-        // takes precedence when surfacing: a successful migration whose unlock
-        // happened to fail must not be reported as a failure, since the session
-        // lock is released anyway when the connection closes.
+        // migration does not leave it held for the session.
         let unlock = client
             .execute("SELECT pg_advisory_unlock($1)", &[&lock_id])
             .await;
 
+        // The migration outcome is what callers care about. The advisory lock is
+        // session-scoped and released when the connection closes, so an unlock
+        // that fails after a successful migration is harmless: log it rather than
+        // turning a completed migration into a reported failure.
         result?;
-        unlock?;
+        if let Err(error) = unlock {
+            tracing::warn!(
+                %error,
+                "advisory unlock after migration failed; the lock releases on connection close",
+            );
+        }
         Ok(())
     }
 

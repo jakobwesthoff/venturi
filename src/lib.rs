@@ -37,4 +37,4 @@ pub use error::Error;
 pub use outcome::{Outcome, TaskError};
 pub use queue::Queue;
 pub use task::{DedupKey, Handler, Merge, Pending, Priority, Task};
-pub use worker::{Worker, WorkerBuilder};
+pub use worker::{PanicPolicy, Worker, WorkerBuilder};

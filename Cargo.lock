@@ -2949,6 +2949,7 @@ dependencies = [
  "chrono",
  "deadpool-postgres",
  "futures",
+ "futures-util",
  "metrics",
  "metrics-util",
  "proptest",

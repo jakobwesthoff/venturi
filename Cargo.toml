@@ -11,6 +11,7 @@ categories = ["asynchronous", "database"]
 async-trait = "0.1.89"
 chrono = "0.4.45"
 deadpool-postgres = "0.14.1"
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 metrics = { version = "0.24.6", optional = true }
 # `refinery`/`refinery-core` are pulled with default features off on purpose:
 # the `tokio-postgres` feature would force `native-tls`/`postgres-native-tls`

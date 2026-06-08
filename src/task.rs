@@ -253,6 +253,14 @@ pub trait Task: Serialize + DeserializeOwned + Send + Sync + 'static + Sized {
 pub trait Handler<S>: Task {
     /// Run the job. `&self` is the deserialized payload, `state` is the worker's
     /// shared dependencies, and `ctx` is this run's execution context.
+    ///
+    /// A panic here is caught at the task boundary and settled as a failed
+    /// execution (retried with backoff by default, or sent to dead per the
+    /// worker's panic policy); the run's context is discarded and a retry resumes
+    /// from the pre-run carry. Any invariant of the shared `state` (for example a
+    /// lock that a panic could poison) is the handler's responsibility. Under a
+    /// build that aborts on panic the process ends instead and the job is recovered
+    /// by lease expiry.
     fn handle(
         &self,
         ctx: &mut Context<Self::Carry>,

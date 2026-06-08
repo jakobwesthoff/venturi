@@ -148,13 +148,17 @@ A normal return settles by its `Outcome` (complete, pause, retry, or dead, per t
 task model); a handler task that ended in a panic settles as a failed execution
 (ADR 20).
 
-Panic isolation relies on the async runtime catching a panicking task at its
-boundary and surfacing it as a join error rather than crashing the process. This
-holds when the binary unwinds on panic. When the binary is built to abort on panic
-instead, a handler panic terminates the whole process, which is the worker-death
-case already covered by stale-claim recovery. Correctness therefore never depends
-on the consuming binary's panic configuration, only on how quickly and gracefully a
-panic is absorbed.
+Panic isolation wraps each handler run so a panic is caught at the task boundary
+and turned into a failed execution, settled like any other failure; the partially
+mutated context is discarded and a retry resumes from the pre-run carry. By default
+a panic is retried with backoff (bounded by the backstop), and a worker may instead
+be configured to settle panics straight to dead. This holds when the binary unwinds
+on panic. When
+the binary is built to abort on panic instead, a handler panic terminates the
+whole process, which is the worker-death case already covered by stale-claim
+recovery. Correctness therefore never depends on the consuming binary's panic
+configuration; only the promptness of recovery does, immediate under unwind and at
+lease expiry under abort.
 
 Settlement and release are guarded by claim ownership: the write applies only if
 the worker still holds the claim (the row is still `claimed` by this worker). A

@@ -474,6 +474,7 @@ points.
 | `backoff(Backoff)` | base `1s`, cap `5m` | Retry curve. `Task::backoff` overrides per task. |
 | `backstop(Option<u32>)` | high | Absolute failed-execution cap before dead; `None` disables. |
 | `priority_ratio(Option<u32>)` | `Some(4)` | Anti-starvation ratio; `None` is strict priority. |
+| `panic_policy(PanicPolicy)` | `Retry` | How a handler panic settles: `Retry` (failed execution, backoff, bounded by the backstop) or `Dead` (straight to dead). |
 
 Cross-process wakeups are always on: the store opens a `LISTEN` connection from
 the same parameters it builds the pool with, and every write that makes a job

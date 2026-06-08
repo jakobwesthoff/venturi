@@ -43,6 +43,24 @@ const FLOOR_ALL: i16 = 0;
 const FLOOR_NORMAL: i16 = 1;
 const FLOOR_LOW: i16 = 2;
 
+/// How a handler panic is settled.
+///
+/// A panic is caught at the task boundary and turned into a failed execution; this
+/// chooses which kind. The default, [`PanicPolicy::Retry`], is consistent with how
+/// a mid-run process crash is handled (recovered as a failed execution with
+/// backoff) and with the retryable-by-default error model, so a transient panic
+/// recovers and a deterministic one still reaches dead at the backstop. Under a
+/// build that aborts on panic the process ends instead, and either policy falls to
+/// lease recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanicPolicy {
+    /// Settle a panic as a retryable failure, scheduled with backoff and bounded
+    /// by the backstop. The default.
+    Retry,
+    /// Settle a panic as a permanent failure: the job moves straight to dead.
+    Dead,
+}
+
 /// Worker configuration, all set at construction with conservative defaults.
 #[derive(Debug, Clone)]
 struct WorkerConfig {
@@ -54,6 +72,7 @@ struct WorkerConfig {
     jitter_fraction: f64,
     backstop: Option<u32>,
     priority_ratio: Option<u32>,
+    panic_policy: PanicPolicy,
 }
 
 impl Default for WorkerConfig {
@@ -67,6 +86,7 @@ impl Default for WorkerConfig {
             jitter_fraction: DEFAULT_JITTER_FRACTION,
             backstop: Some(DEFAULT_BACKSTOP),
             priority_ratio: Some(DEFAULT_PRIORITY_RATIO),
+            panic_policy: PanicPolicy::Retry,
         }
     }
 }
@@ -183,6 +203,17 @@ where
     #[must_use]
     pub fn priority_ratio(mut self, ratio: Option<u32>) -> Self {
         self.config.priority_ratio = ratio;
+        self
+    }
+
+    /// How a handler panic is settled. Defaults to [`PanicPolicy::Retry`].
+    ///
+    /// [`PanicPolicy::Dead`] sends a panicking job straight to dead instead, for
+    /// deployments that treat a panic as an unrecoverable programmer error rather
+    /// than a transient failure.
+    #[must_use]
+    pub fn panic_policy(mut self, policy: PanicPolicy) -> Self {
+        self.config.panic_policy = policy;
         self
     }
 
@@ -501,6 +532,7 @@ where
             history,
             state: Arc::clone(&self.state),
             cancel: shutdown.clone(),
+            panic_policy: self.config.panic_policy,
         };
 
         let report = self.registry.dispatch(&kind, input);
@@ -539,8 +571,10 @@ where
                 }
             }
             Err(join_error) => {
-                // A panicked or aborted handler does not settle itself. Drop its
-                // tracking; the job stays claimed and is recovered by lease expiry.
+                // An aborted handler (force-aborted at shutdown) does not settle
+                // itself; shutdown release or lease expiry returns its job to the
+                // pool. Handler panics do not reach here: they are caught at the
+                // task boundary and settled as a failed execution.
                 if let Some(job) = inflight.remove(&join_error.id()) {
                     release_slot(by_kind, &job.kind);
                 }
@@ -1118,5 +1152,102 @@ mod tests {
         assert_eq!(job.failure_count, 0);
         // The carry mutated during the paused run survived to the next run.
         assert_eq!(job.carry, serde_json::json!(1));
+    }
+
+    // --- Handler panics (immediate failed-execution settlement) ---
+
+    /// A handler that panics on its first run and completes on the next, driven by
+    /// a shared run counter.
+    #[derive(Serialize, Deserialize)]
+    struct Panicky;
+
+    impl crate::task::Task for Panicky {
+        const KIND: &'static str = "panicky";
+        type Carry = ();
+    }
+
+    impl Handler<Arc<AtomicUsize>> for Panicky {
+        async fn handle(
+            &self,
+            _ctx: &mut Context<()>,
+            state: &Arc<AtomicUsize>,
+        ) -> Result<Outcome, TaskError> {
+            if state.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("boom in handler");
+            }
+            Ok(Outcome::completed())
+        }
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_settles_as_a_failed_execution_then_recovers() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Panicky).await.expect("enqueue");
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        let worker = Worker::builder(runs.clone(), Arc::new(store.clone()))
+            .register::<Panicky>()
+            .build();
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+
+        // The panicking run must settle promptly as a retry (not stay claimed for
+        // the lease); the retry then completes. If the panic were left to lease
+        // recovery, this would never reach Completed within the deadline.
+        wait_until(|| store.count(crate::store::Status::Completed) == 1).await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+
+        let job = store.job(id).expect("job exists");
+        assert_eq!(job.status, crate::store::Status::Completed);
+        // The panic counts as exactly one failed execution.
+        assert_eq!(job.failure_count, 1);
+        // The journal records the panic as a retry, then the completion.
+        let outcomes = store
+            .journal(id)
+            .await
+            .expect("journal")
+            .into_iter()
+            .map(|e| e.outcome)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes,
+            vec![
+                crate::store::JournalOutcome::Retried,
+                crate::store::JournalOutcome::Completed,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn panic_policy_dead_sends_a_panicking_job_straight_to_dead() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Panicky).await.expect("enqueue");
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        let worker = Worker::builder(runs.clone(), Arc::new(store.clone()))
+            .register::<Panicky>()
+            .panic_policy(PanicPolicy::Dead)
+            .build();
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+
+        wait_until(|| store.count(crate::store::Status::Dead) == 1).await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+
+        let job = store.job(id).expect("job exists");
+        assert_eq!(job.status, crate::store::Status::Dead);
+        assert_eq!(job.failure_count, 1);
+        let outcomes = store
+            .journal(id)
+            .await
+            .expect("journal")
+            .into_iter()
+            .map(|e| e.outcome)
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes, vec![crate::store::JournalOutcome::Dead]);
     }
 }

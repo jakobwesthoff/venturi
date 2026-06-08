@@ -12,8 +12,10 @@ use crate::context::{Context, JournalEntry};
 use crate::error::Error;
 use crate::outcome::{Outcome, TaskError};
 use crate::task::Handler;
+use futures_util::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +35,8 @@ pub(crate) struct RunInput<S> {
     pub state: Arc<S>,
     /// Fires when a graceful shutdown is signalled.
     pub cancel: CancellationToken,
+    /// How a panic in this run is settled.
+    pub panic_policy: super::PanicPolicy,
 }
 
 /// What one completed run yields back to the worker for settlement.
@@ -150,6 +154,11 @@ where
         Box::pin(async move {
             let payload: T = serde_json::from_value(input.payload)?;
 
+            // Keep the pre-run carry as JSON. If the handler panics mid-run, its
+            // partially mutated context is discarded and the retry resumes from
+            // this last good state rather than a torn one.
+            let carry_before = input.carry.clone();
+
             // A `null` carry is the initial (never-run) state; decode anything
             // else, falling back to the default only when storage holds null.
             let carry: T::Carry = if input.carry.is_null() {
@@ -160,24 +169,68 @@ where
 
             let mut ctx = Context::new(input.run_count, input.history, carry, input.cancel);
             let started = std::time::Instant::now();
-            let result = payload.handle(&mut ctx, &input.state).await;
+
+            // Catch a panic at the task boundary so it settles as a failed
+            // execution (a retryable error) instead of abandoning the claim to
+            // lease recovery. `AssertUnwindSafe` is sound here because a caught
+            // panic discards `ctx` and the handler's effects and persists the
+            // pre-run carry, so no torn value crosses the unwind boundary. This
+            // only engages under unwind; an abort-mode panic ends the process and
+            // still falls to lease recovery.
+            let caught = AssertUnwindSafe(payload.handle(&mut ctx, &input.state))
+                .catch_unwind()
+                .await;
             let duration = started.elapsed();
 
             // Capture the per-task backoff override before dropping the payload,
             // so the worker can schedule a retry without the concrete type.
             let backoff = payload.backoff();
 
-            let (carry, attachment) = ctx.into_parts();
-            let carry = serde_json::to_value(carry)?;
-            Ok(RunReport {
-                result,
-                carry,
-                backoff,
-                attachment,
-                duration,
-            })
+            match caught {
+                Ok(result) => {
+                    let (carry, attachment) = ctx.into_parts();
+                    let carry = serde_json::to_value(carry)?;
+                    Ok(RunReport {
+                        result,
+                        carry,
+                        backoff,
+                        attachment,
+                        duration,
+                    })
+                }
+                Err(panic) => {
+                    // The configured policy decides whether a panic is a retryable
+                    // failure (scheduled with backoff, bounded by the backstop) or
+                    // a permanent one (straight to dead). Both flow through the
+                    // worker's normal settlement routing.
+                    let message = panic_message(panic);
+                    let error = match input.panic_policy {
+                        super::PanicPolicy::Retry => TaskError::retryable(message),
+                        super::PanicPolicy::Dead => TaskError::permanent(message),
+                    };
+                    Ok(RunReport {
+                        result: Err(error),
+                        carry: carry_before,
+                        backoff,
+                        attachment: None,
+                        duration,
+                    })
+                }
+            }
         })
     })
+}
+
+/// Extract a readable message from a caught panic payload, which is the value
+/// passed to `panic!` (commonly a `&str` or `String`).
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        format!("handler panicked: {message}")
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        format!("handler panicked: {message}")
+    } else {
+        "handler panicked".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +271,7 @@ mod tests {
             history: Vec::new(),
             state,
             cancel: CancellationToken::new(),
+            panic_policy: crate::worker::PanicPolicy::Retry,
         }
     }
 

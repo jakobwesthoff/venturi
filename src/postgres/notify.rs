@@ -4,32 +4,76 @@
 //! cannot be received on a pooled client. The notifier therefore owns a separate
 //! `tokio_postgres` connection, holds its client alive to keep the connection
 //! open, and forwards each `NOTIFY` as a wakeup. If the connection drops, the next
-//! `recv` reconnects and returns so the worker re-polls (covering any
-//! notification missed while disconnected). Listening is opt-in and currently
-//! `NoTls` only; without it, the worker relies on its bounded poll.
+//! `recv` reconnects and returns so the worker re-polls (covering any notification
+//! missed while disconnected).
+//!
+//! The dedicated connection is built through a [`ListenFactory`]: a type-erased
+//! closure that captures the store's connection config and TLS connector. Erasing
+//! the generic `MakeTlsConnect` connector behind the closure lets the non-generic
+//! `PostgresStore` rebuild the listening connection with whatever TLS the rest of
+//! the adapter uses, so push wakeups work for every deployment, plaintext or TLS.
 
 use crate::error::Error;
 use crate::store::Notifier;
 use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-use tokio_postgres::{AsyncMessage, NoTls};
+use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
+use tokio_postgres::{AsyncMessage, Client, Socket};
+
+/// Builds a dedicated, listening `tokio_postgres` connection for a channel.
+///
+/// Given a channel name, the factory connects, starts forwarding that
+/// connection's notifications as unit wakeups, issues the `LISTEN`, and returns
+/// the live client together with the wakeup receiver. The concrete `Client` and
+/// receiver in the return type erase the connector's generic parameters, so the
+/// same factory value works for any TLS stack.
+pub(crate) type ListenFactory = Arc<
+    dyn Fn(
+            String,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<(Client, UnboundedReceiver<()>), Error>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// Build a [`ListenFactory`] that connects with `config` and `tls`.
+///
+/// The generic connector lives only here; the returned factory is fully
+/// type-erased. `config` and `tls` are cloned for each connection attempt, so the
+/// factory can rebuild the connection on reconnect.
+pub(crate) fn make_listen_factory<T>(config: tokio_postgres::Config, tls: T) -> ListenFactory
+where
+    T: MakeTlsConnect<Socket> + Clone + Send + Sync + 'static,
+    T::Stream: Send + Sync,
+    T::TlsConnect: Send + Sync,
+    <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+{
+    Arc::new(move |channel: String| {
+        let config = config.clone();
+        let tls = tls.clone();
+        Box::pin(async move { listen(config, tls, &channel).await })
+    })
+}
 
 /// A notifier backed by a dedicated `LISTEN` connection.
 pub(crate) struct PgNotifier {
-    dsn: String,
+    factory: ListenFactory,
     channel: String,
     // Kept alive so the listening connection stays open; replaced on reconnect.
-    client: tokio_postgres::Client,
+    client: Client,
     wakeups: UnboundedReceiver<()>,
 }
 
 impl PgNotifier {
-    /// Connect a dedicated listener on `dsn` and `LISTEN` on `channel`.
-    pub(crate) async fn connect(dsn: &str, channel: &str) -> Result<PgNotifier, Error> {
-        let (client, wakeups) = listen(dsn, channel).await?;
+    /// Connect a dedicated listener through `factory` and `LISTEN` on `channel`.
+    pub(crate) async fn connect(factory: ListenFactory, channel: String) -> Result<PgNotifier, Error> {
+        let (client, wakeups) = factory(channel.clone()).await?;
         Ok(PgNotifier {
-            dsn: dsn.to_owned(),
-            channel: channel.to_owned(),
+            factory,
+            channel,
             client,
             wakeups,
         })
@@ -38,7 +82,7 @@ impl PgNotifier {
     /// Rebuild the listening connection after a drop, returning once it is back
     /// (or after a short pause if it cannot be re-established yet).
     async fn reconnect(&mut self) {
-        match listen(&self.dsn, &self.channel).await {
+        match (self.factory)(self.channel.clone()).await {
             Ok((client, wakeups)) => {
                 self.client = client;
                 self.wakeups = wakeups;
@@ -63,12 +107,19 @@ impl Notifier for PgNotifier {
     }
 }
 
-/// Open a connection, start forwarding its notifications, and `LISTEN`.
-async fn listen(
-    dsn: &str,
+/// Open a connection with `config`/`tls`, start forwarding its notifications, and
+/// `LISTEN` on `channel`.
+async fn listen<T>(
+    config: tokio_postgres::Config,
+    tls: T,
     channel: &str,
-) -> Result<(tokio_postgres::Client, UnboundedReceiver<()>), Error> {
-    let (client, mut connection) = tokio_postgres::connect(dsn, NoTls).await?;
+) -> Result<(Client, UnboundedReceiver<()>), Error>
+where
+    T: MakeTlsConnect<Socket> + Send + 'static,
+    T::Stream: Send,
+    <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+{
+    let (client, mut connection) = config.connect(tls).await?;
     let (tx, rx) = unbounded_channel();
 
     // The connection task drives the protocol and forwards each notification as a

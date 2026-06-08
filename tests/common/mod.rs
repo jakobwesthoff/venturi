@@ -88,7 +88,7 @@ impl TestDb {
     /// Build a migrated [`PostgresStore`] over this container under `prefix`.
     pub async fn store(&self, prefix: &str) -> PostgresStore {
         let store =
-            PostgresStore::new(self.pool.clone(), prefix).expect("construct store with prefix");
+            PostgresStore::connect(&self.dsn(), prefix).expect("construct store with prefix");
         store.migrate().await.expect("apply migrations");
         store
     }

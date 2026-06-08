@@ -1,10 +1,14 @@
 //! The default PostgreSQL storage adapter.
 //!
 //! [`PostgresStore`] implements [`crate::store::Store`] over a
-//! `deadpool_postgres::Pool`. The pool is built by the caller with whatever TLS
-//! connector it wants (`NoTls` or a rustls `MakeRustlsConnect`), so the adapter
-//! itself is TLS-agnostic. All of the adapter's tables and indexes are named from
-//! a configurable prefix, letting several independent queues share one database.
+//! `deadpool_postgres::Pool`. The adapter owns its connection parameters (a
+//! `tokio_postgres::Config` and a TLS connector) and builds two things from them:
+//! the work pool that serves every query, and the dedicated `LISTEN` connection
+//! that delivers push wakeups. Owning both means the listener always uses the same
+//! TLS path as the pool, so push wakeups work for every deployment, plaintext or
+//! TLS, with no separate endpoint and no opt-in. All of the adapter's tables and
+//! indexes are named from a configurable prefix, letting several independent
+//! queues share one database.
 
 mod migrations;
 mod notify;
@@ -18,74 +22,98 @@ use crate::store::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
-use notify::PgNotifier;
+use notify::{ListenFactory, PgNotifier, make_listen_factory};
 use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
 use std::time::Duration;
+use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::types::ToSql;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, Socket};
 use ulid::Ulid;
 
 /// The PostgreSQL-backed storage adapter.
 ///
-/// Construct it from a ready connection pool and a table-name prefix with
-/// [`PostgresStore::new`], then call [`Store::migrate`] once at startup to apply
-/// the schema.
+/// Construct it from connection parameters and a table-name prefix with
+/// [`PostgresStore::connect`] (plaintext), [`PostgresStore::connect_rustls`] (TLS),
+/// or [`PostgresStore::from_config`] (any connector), then call [`Store::migrate`]
+/// once at startup to apply the schema. The dedicated `LISTEN` connection that
+/// delivers push wakeups is built from the same parameters, so listening is always
+/// on and always matches the pool's TLS.
 #[derive(Clone)]
 pub struct PostgresStore {
     pool: Pool,
     prefix: String,
-    // Connection string for the dedicated LISTEN connection; `None` means a
-    // worker over this store relies on polling for newly enqueued work.
-    listen_dsn: Option<String>,
+    // Builds the dedicated LISTEN connection on demand, carrying the same
+    // connection config and TLS connector the pool was built with.
+    listen_factory: ListenFactory,
 }
 
 impl PostgresStore {
-    /// Build an adapter over `pool`, naming all tables and indexes from `prefix`.
+    /// Build an adapter from a `tokio_postgres::Config` and a TLS connector.
+    ///
+    /// This is the general constructor the convenience ones delegate to. The store
+    /// builds its own work pool and its dedicated `LISTEN` connection from the same
+    /// `config` and `tls`, so push wakeups use the same TLS path as every query.
+    /// Neither connection is opened here; the pool connects lazily and the listener
+    /// connects when a worker first asks for notifications.
     ///
     /// `prefix` must be a safe, short SQL identifier fragment: it starts with a
-    /// lowercase letter, contains only `[a-z0-9_]`, and is at most 39 characters
-    /// so every generated identifier (the longest being
+    /// lowercase letter, contains only `[a-z0-9_]`, and is at most 39 characters so
+    /// every generated identifier (the longest being
     /// `{prefix}_refinery_schema_history`) stays within PostgreSQL's 63-character
     /// limit.
-    pub fn new(pool: Pool, prefix: impl Into<String>) -> Result<Self, Error> {
+    pub fn from_config<T>(
+        config: tokio_postgres::Config,
+        tls: T,
+        prefix: impl Into<String>,
+    ) -> Result<Self, Error>
+    where
+        T: MakeTlsConnect<Socket> + Clone + Send + Sync + 'static,
+        T::Stream: Send + Sync,
+        T::TlsConnect: Send + Sync,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
         let prefix = prefix.into();
         validate_prefix(&prefix)?;
-        Ok(PostgresStore {
-            pool,
-            prefix,
-            listen_dsn: None,
-        })
-    }
-
-    /// Build an adapter by connecting to `dsn` with a `NoTls` pool.
-    ///
-    /// A convenience over [`PostgresStore::new`] for the common, non-TLS case: it
-    /// builds the `deadpool` pool internally so a consumer needs no direct
-    /// `deadpool`/`tokio_postgres` dependency. `dsn` is a standard
-    /// libpq/`tokio_postgres` connection string. For TLS, build the pool yourself
-    /// and use [`PostgresStore::new`]. This also primes the `LISTEN` connection
-    /// with the same `dsn`, so workers receive enqueue notifications.
-    pub async fn connect(dsn: &str, prefix: impl Into<String>) -> Result<Self, Error> {
-        let pg_config: tokio_postgres::Config = dsn.parse()?;
         let manager_config = ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         };
-        let manager = Manager::from_config(pg_config, NoTls, manager_config);
+        let manager = Manager::from_config(config.clone(), tls.clone(), manager_config);
         let pool = Pool::builder(manager).build()?;
-        Ok(PostgresStore::new(pool, prefix)?.with_listen(dsn))
+        let listen_factory = make_listen_factory(config, tls);
+        Ok(PostgresStore {
+            pool,
+            prefix,
+            listen_factory,
+        })
     }
 
-    /// Enable push wakeups by giving the worker a connection string for a
-    /// dedicated `LISTEN` connection.
+    /// Build an adapter by connecting to `dsn` without TLS.
     ///
-    /// Enqueues emit a `NOTIFY` regardless; this is what lets a worker *receive*
-    /// them and react immediately instead of at the next poll. The connection is
-    /// `NoTls`; without this, the worker still picks up new work within its poll
-    /// interval. The `dsn` is a standard libpq/`tokio_postgres` connection string.
-    #[must_use]
-    pub fn with_listen(mut self, dsn: impl Into<String>) -> Self {
-        self.listen_dsn = Some(dsn.into());
-        self
+    /// The common local case: it builds the `deadpool` pool and the listener
+    /// internally with `NoTls`, so a consumer needs no direct
+    /// `deadpool`/`tokio_postgres` dependency. `dsn` is a standard
+    /// libpq/`tokio_postgres` connection string. For TLS, use
+    /// [`PostgresStore::connect_rustls`] or [`PostgresStore::from_config`].
+    pub fn connect(dsn: &str, prefix: impl Into<String>) -> Result<Self, Error> {
+        let config: tokio_postgres::Config = dsn.parse()?;
+        PostgresStore::from_config(config, NoTls, prefix)
+    }
+
+    /// Build an adapter by connecting to `dsn` over TLS with a rustls connector.
+    ///
+    /// The TLS counterpart to [`PostgresStore::connect`]: it wraps `client_config`
+    /// in a `tokio_postgres_rustls` connector and builds the pool and the listener
+    /// from it, so a TLS deployment gets push wakeups over the same encrypted path
+    /// with no plaintext endpoint. Requires the `rustls` feature.
+    #[cfg(feature = "rustls")]
+    pub fn connect_rustls(
+        dsn: &str,
+        prefix: impl Into<String>,
+        client_config: rustls::ClientConfig,
+    ) -> Result<Self, Error> {
+        let config: tokio_postgres::Config = dsn.parse()?;
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(client_config);
+        PostgresStore::from_config(config, tls, prefix)
     }
 
     /// The configured table-name prefix.
@@ -327,10 +355,8 @@ impl Store for PostgresStore {
     }
 
     async fn notifier(&self) -> Result<Box<dyn Notifier>, Error> {
-        match &self.listen_dsn {
-            Some(dsn) => Ok(Box::new(PgNotifier::connect(dsn, &self.channel()).await?)),
-            None => Ok(Box::new(crate::store::NeverNotifier)),
-        }
+        let notifier = PgNotifier::connect(self.listen_factory.clone(), self.channel()).await?;
+        Ok(Box::new(notifier))
     }
 
     async fn find_stale(&self) -> Result<Vec<JobRecord>, Error> {

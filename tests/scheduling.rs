@@ -180,7 +180,7 @@ impl Handler<Arc<AtomicUsize>> for Quick {
 async fn notify_wakes_an_idle_worker_promptly() {
     let db = TestDb::start().await;
     // A long poll so a prompt pickup can only come from the NOTIFY path.
-    let store = Arc::new(db.store("venturi").await.with_listen(db.dsn()));
+    let store = Arc::new(db.store("venturi").await);
     let queue = Queue::new(store.clone());
 
     let ran = Arc::new(AtomicUsize::new(0));

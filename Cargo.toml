@@ -18,14 +18,14 @@ metrics = { version = "0.24.6", optional = true }
 # migration traits over a `tokio_postgres::Client` ourselves (postgres module).
 refinery = { version = "0.9.1", default-features = false }
 refinery-core = { version = "0.9.1", default-features = false }
-rustls = "0.23.40"
+rustls = { version = "0.23.40", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["parsing", "formatting"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-postgres = { version = "0.7.17", features = ["with-chrono-0_4", "with-serde_json-1"] }
-tokio-postgres-rustls = "0.14.0"
+tokio-postgres-rustls = { version = "0.14.0", optional = true }
 tokio-util = "0.7.18"
 tracing = "0.1.44"
 ulid = { version = "1.2.1", features = ["serde"] }
@@ -36,6 +36,10 @@ default = ["postgres"]
 postgres = []
 # Opt-in metric emission through the vendor-neutral `metrics` facade.
 metrics = ["dep:metrics"]
+# TLS construction via rustls (the `connect_rustls` constructor). Off by default
+# so plaintext-only consumers do not compile the rustls stack; the `from_config`
+# constructor still accepts any caller-supplied connector without this feature.
+rustls = ["dep:rustls", "dep:tokio-postgres-rustls"]
 
 [dev-dependencies]
 futures = "0.3.32"

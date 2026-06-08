@@ -26,7 +26,7 @@ async fn harness_connects() {
 #[ignore = "requires Docker"]
 async fn migrate_creates_prefixed_tables_idempotently() {
     let db = TestDb::start().await;
-    let store = PostgresStore::new(db.pool().clone(), "venturi").expect("construct store");
+    let store = PostgresStore::connect(&db.dsn(), "venturi").expect("construct store");
 
     store.migrate().await.expect("first migration");
 
@@ -48,8 +48,8 @@ async fn migrate_creates_prefixed_tables_idempotently() {
 async fn two_prefixes_coexist() {
     let db = TestDb::start().await;
 
-    let alpha = PostgresStore::new(db.pool().clone(), "alpha").expect("construct alpha");
-    let beta = PostgresStore::new(db.pool().clone(), "beta").expect("construct beta");
+    let alpha = PostgresStore::connect(&db.dsn(), "alpha").expect("construct alpha");
+    let beta = PostgresStore::connect(&db.dsn(), "beta").expect("construct beta");
 
     alpha.migrate().await.expect("migrate alpha");
     beta.migrate().await.expect("migrate beta");

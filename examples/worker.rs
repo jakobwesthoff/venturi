@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "host=localhost user=postgres password=postgres dbname=postgres".to_owned()
     });
 
-    let store = Arc::new(PostgresStore::connect(&dsn, "venturi").await?);
+    let store = Arc::new(PostgresStore::connect(&dsn, "venturi")?);
     store.migrate().await?;
 
     let worker = Worker::builder(App, store)

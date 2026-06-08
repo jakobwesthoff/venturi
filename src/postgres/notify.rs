@@ -19,7 +19,8 @@ use async_trait::async_trait;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{AsyncMessage, Client, Socket};
 
@@ -34,7 +35,7 @@ pub(crate) type ListenFactory = Arc<
     dyn Fn(
             String,
         )
-            -> Pin<Box<dyn Future<Output = Result<(Client, UnboundedReceiver<()>), Error>> + Send>>
+            -> Pin<Box<dyn Future<Output = Result<(Client, Receiver<()>), Error>> + Send>>
         + Send
         + Sync,
 >;
@@ -64,7 +65,7 @@ pub(crate) struct PgNotifier {
     channel: String,
     // Kept alive so the listening connection stays open; replaced on reconnect.
     client: Client,
-    wakeups: UnboundedReceiver<()>,
+    wakeups: Receiver<()>,
 }
 
 impl PgNotifier {
@@ -116,14 +117,19 @@ async fn listen<T>(
     config: tokio_postgres::Config,
     tls: T,
     channel: &str,
-) -> Result<(Client, UnboundedReceiver<()>), Error>
+) -> Result<(Client, Receiver<()>), Error>
 where
     T: MakeTlsConnect<Socket> + Send + 'static,
     T::Stream: Send,
     <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
 {
     let (client, mut connection) = config.connect(tls).await?;
-    let (tx, rx) = unbounded_channel();
+    // A capacity-of-one channel coalesces wakeups: the worker re-queries the
+    // full claimable set on each wake, so a single pending wakeup already covers
+    // any number of notifications that arrive while it is busy. Bounding the
+    // channel keeps a burst of NOTIFYs from accumulating an unbounded backlog of
+    // redundant wakeups.
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
 
     // The connection task drives the protocol and forwards each notification as a
     // unit wakeup. It ends when the connection closes or the receiver is dropped.
@@ -131,11 +137,13 @@ where
         loop {
             let message = std::future::poll_fn(|cx| connection.poll_message(cx)).await;
             match message {
-                Some(Ok(AsyncMessage::Notification(_))) => {
-                    if tx.send(()).is_err() {
-                        break;
-                    }
-                }
+                Some(Ok(AsyncMessage::Notification(_))) => match tx.try_send(()) {
+                    // Delivered, or a wakeup is already pending and subsumes this
+                    // one; either way the worker will re-poll.
+                    Ok(()) | Err(TrySendError::Full(())) => {}
+                    // The receiver is gone, so nothing will consume wakeups.
+                    Err(TrySendError::Closed(())) => break,
+                },
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
             }

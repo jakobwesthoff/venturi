@@ -32,10 +32,7 @@ use tokio_postgres::{AsyncMessage, Client, Socket};
 /// receiver in the return type erase the connector's generic parameters, so the
 /// same factory value works for any TLS stack.
 pub(crate) type ListenFactory = Arc<
-    dyn Fn(
-            String,
-        )
-            -> Pin<Box<dyn Future<Output = Result<(Client, Receiver<()>), Error>> + Send>>
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(Client, Receiver<()>), Error>> + Send>>
         + Send
         + Sync,
 >;

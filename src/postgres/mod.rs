@@ -652,7 +652,8 @@ impl Store for PostgresStore {
                      WHERE id = $1 AND status = 'pending'",
                     prefix = self.prefix,
                 );
-                tx.execute(&sql, &[&id, &payload, &carry, &priority]).await?
+                tx.execute(&sql, &[&id, &payload, &carry, &priority])
+                    .await?
             }
             None => {
                 let sql = format!(

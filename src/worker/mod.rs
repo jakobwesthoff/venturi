@@ -441,10 +441,34 @@ where
             }
         }
 
-        // Abort any straggler and release its job. The ownership guard makes a
-        // release a no-op if the handler in fact settled in the meantime.
+        self.force_finish(running, inflight).await;
+    }
+
+    /// Abort whatever handlers are still running past the drain deadline and
+    /// finish the bookkeeping for everything left in the [`JoinSet`].
+    ///
+    /// A handler that finished between the deadline and the abort still produced
+    /// a settlement: `abort_all` is a no-op for it, and its task yields its
+    /// `FinishedRun`, so it must be settled, not released. Only handlers that were
+    /// genuinely aborted (their task yields a cancellation error) are released
+    /// back to pending for another worker to retry.
+    async fn force_finish(
+        &self,
+        mut running: JoinSet<FinishedRun>,
+        mut inflight: HashMap<tokio::task::Id, InflightJob>,
+    ) {
         running.abort_all();
-        while running.join_next_with_id().await.is_some() {}
+        while let Some(joined) = running.join_next_with_id().await {
+            // A finished handler yields `Ok` and must be settled; an aborted one
+            // yields a cancellation error and is left in `inflight` for the
+            // release loop below to return to pending.
+            if let Ok((task_id, finished)) = joined {
+                inflight.remove(&task_id);
+                if let Err(error) = self.settle(finished).await {
+                    tracing::warn!(%error, "settle failed during shutdown drain");
+                }
+            }
+        }
         for (_, job) in inflight.drain() {
             self.release(&job).await;
         }
@@ -897,6 +921,56 @@ mod tests {
             counters.peak.load(Ordering::SeqCst)
         );
         assert_eq!(store.count(crate::store::Status::Completed), 6);
+    }
+
+    #[tokio::test]
+    async fn shutdown_settles_a_handler_that_finished_before_the_abort() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(SlowJob).await.expect("enqueue");
+
+        let worker = Worker::builder(Counters::new(), Arc::new(store.clone()))
+            .register::<SlowJob>()
+            .build();
+
+        // Claim the job as this worker so the store holds it `claimed` by us; a
+        // release would re-pend it, a settle would complete it.
+        let claimed = store
+            .claim_next(
+                &["slow".to_owned()],
+                FLOOR_ALL,
+                worker.config.lease,
+                &worker.identity,
+            )
+            .await
+            .expect("claim succeeds")
+            .expect("a claimable job");
+        assert_eq!(claimed.id, id);
+
+        // Spawn the real handler, then let it run to completion so a finished
+        // task sits unreaped in the JoinSet: the exact state the forced drain
+        // faces when the deadline fires at the instant a handler returns.
+        let shutdown = CancellationToken::new();
+        let mut running = JoinSet::new();
+        let run_no = claimed.run_count;
+        let kind = claimed.kind.clone();
+        let task_id = worker.spawn(&mut running, claimed, Vec::new(), &shutdown);
+        let mut inflight = HashMap::new();
+        inflight.insert(task_id, InflightJob { id, kind, run_no });
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        worker.force_finish(running, inflight).await;
+
+        assert_eq!(
+            store.count(crate::store::Status::Completed),
+            1,
+            "a handler that finished before the abort must be settled, not re-pended"
+        );
+        assert_eq!(
+            store.count(crate::store::Status::Pending),
+            0,
+            "the completed job must not be released back to pending"
+        );
     }
 
     #[tokio::test]

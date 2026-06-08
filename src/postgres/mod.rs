@@ -17,12 +17,12 @@ use crate::store::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Pool;
+use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use notify::PgNotifier;
 use rows::{JOB_COLUMNS, JOURNAL_COLUMNS, job_from_row, journal_from_row};
 use std::time::Duration;
-use tokio_postgres::Client;
 use tokio_postgres::types::ToSql;
+use tokio_postgres::{Client, NoTls};
 use ulid::Ulid;
 
 /// The PostgreSQL-backed storage adapter.
@@ -55,6 +55,24 @@ impl PostgresStore {
             prefix,
             listen_dsn: None,
         })
+    }
+
+    /// Build an adapter by connecting to `dsn` with a `NoTls` pool.
+    ///
+    /// A convenience over [`PostgresStore::new`] for the common, non-TLS case: it
+    /// builds the `deadpool` pool internally so a consumer needs no direct
+    /// `deadpool`/`tokio_postgres` dependency. `dsn` is a standard
+    /// libpq/`tokio_postgres` connection string. For TLS, build the pool yourself
+    /// and use [`PostgresStore::new`]. This also primes the `LISTEN` connection
+    /// with the same `dsn`, so workers receive enqueue notifications.
+    pub async fn connect(dsn: &str, prefix: impl Into<String>) -> Result<Self, Error> {
+        let pg_config: tokio_postgres::Config = dsn.parse()?;
+        let manager_config = ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        };
+        let manager = Manager::from_config(pg_config, NoTls, manager_config);
+        let pool = Pool::builder(manager).build()?;
+        Ok(PostgresStore::new(pool, prefix)?.with_listen(dsn))
     }
 
     /// Enable push wakeups by giving the worker a connection string for a

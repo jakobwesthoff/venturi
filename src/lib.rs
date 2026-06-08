@@ -11,6 +11,10 @@
 //! and the task layer defines the authoring surface. The default storage adapter
 //! (behind the `postgres` feature) is built on `tokio-postgres`, `deadpool`, and
 //! `refinery`.
+//!
+//! See the getting-started guide in `docs/guide.md` for a walkthrough from first
+//! steps to advanced usage.
+#![warn(missing_docs)]
 
 pub mod backoff;
 pub mod context;

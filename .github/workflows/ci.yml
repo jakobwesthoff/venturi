@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      # Formatting, clippy (warnings as errors), type-check, and the fast tests.
+      - name: Local gate
+        run: just ci
+
+      # Database-backed tests spin up an ephemeral PostgreSQL through
+      # testcontainers, using the Docker daemon present on the runner.
+      - name: Integration tests
+        run: just integration-test

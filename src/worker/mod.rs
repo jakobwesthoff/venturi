@@ -860,6 +860,21 @@ mod tests {
         worker.run(CancellationToken::new()).await;
     }
 
+    proptest::proptest! {
+        /// Over any window of `r²` consecutive claims, the rotation reserves at
+        /// least one slot for Low and still admits the unconstrained (high-first)
+        /// claim, so no tier is starved.
+        #[test]
+        fn rotation_serves_every_tier_in_a_window(r in 2u32..8, start in 0u64..10_000) {
+            let window = u64::from(r) * u64::from(r);
+            let floors: Vec<i16> = (start..start + window)
+                .map(|c| floor_for(c, Some(r)))
+                .collect();
+            proptest::prop_assert!(floors.contains(&FLOOR_LOW), "Low never reserved");
+            proptest::prop_assert!(floors.contains(&FLOOR_ALL), "high-first never admitted");
+        }
+    }
+
     #[test]
     fn floor_rotation_reserves_lower_tiers() {
         // Ratio 2: every 2nd claim reserves Normal/Low, every 4th reserves Low.

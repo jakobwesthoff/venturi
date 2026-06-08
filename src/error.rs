@@ -1,9 +1,9 @@
 //! Public error types for venturi's queue and storage operations.
 //!
-//! Everything a producer or worker call can return surfaces as [`Error`], a
+//! Everything a producer or worker call can return surfaces as [`enum@Error`], a
 //! `thiserror` enum. The crate keeps `anyhow`/`eyre` out of its public API so
 //! consumers can match on concrete failure modes. Handler results use a separate
-//! [`crate::task::TaskError`] (the execution side); this type is the
+//! [`crate::outcome::TaskError`] (the execution side); this type is the
 //! infrastructure side: pools, the driver, migrations, and serialization.
 
 use thiserror::Error;

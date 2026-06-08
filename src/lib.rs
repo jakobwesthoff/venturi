@@ -2,9 +2,8 @@
 //!
 //! Work is modelled as a [`task::Task`]: a plain serializable struct that is both
 //! the payload and the identity of a job. Producers enqueue tasks through a
-//! [`Queue`](queue::Queue) handle; workers claim, run, and settle them through a
-//! [`Worker`](worker::Worker) that dispatches each job back to its
-//! [`task::Handler`].
+//! [`queue::Queue`] handle; workers claim, run, and settle them through a
+//! [`worker::Worker`] that dispatches each job back to its [`task::Handler`].
 //!
 //! The crate is layered so each layer is usable on its own: storage sits behind
 //! the [`store::Store`] backend trait, the worker drives the claim/dispatch loop,

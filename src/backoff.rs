@@ -3,8 +3,8 @@
 //! A retryable failure is rescheduled after a delay derived from the attempt
 //! number. [`Backoff`] holds the configurable base delay and ceiling; a task
 //! returns one from [`crate::task::Task::backoff`] to widen or tighten its own
-//! schedule relative to the worker default. [`retry_delay`] computes the realized
-//! delay: the Fibonacci curve `min(base * (fib(n) - 1), cap)`, spread by
+//! schedule relative to the worker default. The crate computes the realized
+//! delay from the Fibonacci curve `min(base * (fib(n) - 1), cap)`, spread by
 //! proportional jitter derived deterministically from the job's ULID so the
 //! schedule is reproducible and depends on no random-number generator.
 

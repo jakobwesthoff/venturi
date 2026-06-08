@@ -491,7 +491,7 @@ pub struct Snapshot {
 ///
 /// A backend that supports push notification (the PostgreSQL adapter's `LISTEN`)
 /// returns one whose [`recv`](Notifier::recv) resolves on each notification; a
-/// backend without one uses the default [`NeverNotifier`].
+/// backend without one uses a notifier that never fires.
 #[async_trait]
 pub trait Notifier: Send {
     /// Resolve when newly enqueued work may be available. A spurious wakeup is

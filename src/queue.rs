@@ -129,6 +129,7 @@ impl Queue {
                 let update = MergePayload {
                     payload: serde_json::to_value(&task)?,
                     carry: serde_json::to_value(T::Carry::default())?,
+                    priority: task.priority().as_smallint(),
                 };
                 self.apply_merge(
                     &candidate,
@@ -147,6 +148,7 @@ impl Queue {
                 let update = MergePayload {
                     payload: serde_json::to_value(&merged)?,
                     carry: serde_json::to_value(carry)?,
+                    priority: merged.priority().as_smallint(),
                 };
                 self.apply_merge(
                     &candidate,

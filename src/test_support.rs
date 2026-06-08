@@ -410,9 +410,15 @@ impl Store for FakeStore {
             return Ok(false);
         }
 
-        if let Some(MergePayload { payload, carry }) = update {
+        if let Some(MergePayload {
+            payload,
+            carry,
+            priority,
+        }) = update
+        {
             job.payload = payload;
             job.carry = carry;
+            job.priority = priority;
         }
 
         let entry_id = guard.next_journal_id;

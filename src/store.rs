@@ -434,13 +434,17 @@ pub trait Store: Send + Sync {
     ) -> Result<bool, Error>;
 }
 
-/// The new payload and carry to write when applying a Replace or With merge.
+/// The new payload, carry, and priority to write when applying a Replace or With
+/// merge.
 #[derive(Debug, Clone)]
 pub struct MergePayload {
     /// The serialized payload the surviving job should carry.
     pub payload: serde_json::Value,
     /// The serialized carry the surviving job should continue from.
     pub carry: serde_json::Value,
+    /// The priority tier of the superseding task, so claim ordering follows the
+    /// merged-in work rather than the row it replaced.
+    pub priority: i16,
 }
 
 /// A filter for the history query: every set field narrows the result, and the

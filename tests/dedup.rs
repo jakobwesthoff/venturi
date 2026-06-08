@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use venturi::store::{JournalOutcome, Store};
 use venturi::{
-    Context, DedupKey, Handler, Merge, Outcome, Pending, Queue, Task, TaskError, Worker,
+    Context, DedupKey, Handler, Merge, Outcome, Pending, Priority, Queue, Task, TaskError, Worker,
 };
 
 // Each task type fixes one merge behaviour and shares a constant dedup key so it
@@ -83,6 +83,29 @@ impl Task for Indep {
     }
 }
 
+// A task whose scheduling priority is derived from its payload, used to check
+// that a Replace merge adopts the incoming task's priority rather than keeping
+// the superseded row's.
+#[derive(Serialize, Deserialize)]
+struct Prioritized {
+    urgent: bool,
+}
+impl Task for Prioritized {
+    const KIND: &'static str = "prioritized";
+    type Carry = ();
+    fn dedup_key(&self) -> Option<DedupKey> {
+        Some(DedupKey::new("k"))
+    }
+    fn priority(&self) -> Priority {
+        if self.urgent {
+            Priority::High
+        } else {
+            Priority::Normal
+        }
+    }
+    // Default merge is Replace.
+}
+
 #[derive(Serialize, Deserialize)]
 struct Pausing;
 impl Task for Pausing {
@@ -142,6 +165,39 @@ async fn replace_supersedes_the_pending_job() {
     let journal = store.journal(first).await.expect("journal");
     assert_eq!(journal.len(), 1);
     assert_eq!(journal[0].outcome, JournalOutcome::Merged);
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn replace_adopts_the_incoming_priority() {
+    let db = TestDb::start().await;
+    let queue = Queue::new(Arc::new(db.store("venturi").await));
+
+    // The pending row starts at Normal priority; a Replace by an urgent payload
+    // must move it to High so claim ordering reflects the superseding task.
+    let first = queue
+        .enqueue(Prioritized { urgent: false })
+        .await
+        .expect("first");
+    let second = queue
+        .enqueue(Prioritized { urgent: true })
+        .await
+        .expect("second");
+    assert_eq!(first, second, "replace reuses the existing row");
+
+    let client = db.pool().get().await.expect("connection");
+    let row = client
+        .query_one(
+            "SELECT priority FROM venturi_jobs WHERE id = $1",
+            &[&first.to_string()],
+        )
+        .await
+        .expect("priority");
+    let priority: i16 = row.get(0);
+    assert_eq!(
+        priority, 0,
+        "replace adopts the incoming task's High priority"
+    );
 }
 
 #[tokio::test]

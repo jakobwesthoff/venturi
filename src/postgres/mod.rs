@@ -636,13 +636,17 @@ impl Store for PostgresStore {
         // guarded statement reports whether the candidate is still mergeable
         // without changing it.
         let affected = match update {
-            Some(MergePayload { payload, carry }) => {
+            Some(MergePayload {
+                payload,
+                carry,
+                priority,
+            }) => {
                 let sql = format!(
-                    "UPDATE {prefix}_jobs SET payload = $2, carry = $3 \
+                    "UPDATE {prefix}_jobs SET payload = $2, carry = $3, priority = $4 \
                      WHERE id = $1 AND status = 'pending'",
                     prefix = self.prefix,
                 );
-                tx.execute(&sql, &[&id, &payload, &carry]).await?
+                tx.execute(&sql, &[&id, &payload, &carry, &priority]).await?
             }
             None => {
                 let sql = format!(

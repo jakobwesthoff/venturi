@@ -65,7 +65,7 @@ use venturi::postgres::PostgresStore;
 use venturi::store::Store;
 
 let dsn = "host=localhost user=postgres password=postgres dbname=postgres";
-let store = Arc::new(PostgresStore::connect(dsn, "venturi").await?);
+let store = Arc::new(PostgresStore::connect(dsn, "venturi")?);
 store.migrate().await?;
 ```
 
@@ -74,9 +74,12 @@ store.migrate().await?;
 one database. A prefix must be a short, lowercase identifier (`[a-z0-9_]`,
 starting with a letter, at most 39 characters).
 
-`connect` builds a `NoTls` connection pool for you. For TLS, build a
-`deadpool_postgres::Pool` with a rustls connector yourself and use
-[`PostgresStore::new(pool, prefix)`][`PostgresStore::new`].
+`connect` builds a `NoTls` connection for you. For TLS, enable the `rustls`
+feature and use [`PostgresStore::connect_rustls(dsn, prefix, client_config)`][`connect_rustls`];
+to supply a different connector, use
+[`PostgresStore::from_config(config, tls, prefix)`][`from_config`]. The store
+builds its claim pool and its `LISTEN` connection from the same parameters, so
+push wakeups always use the same transport as the pool.
 
 ## 3. Your first task
 
@@ -472,9 +475,10 @@ points.
 | `backstop(Option<u32>)` | high | Absolute failed-execution cap before dead; `None` disables. |
 | `priority_ratio(Option<u32>)` | `Some(4)` | Anti-starvation ratio; `None` is strict priority. |
 
-For prompt cross-process wakeups, point the store at a `LISTEN` connection with
-`PostgresStore::with_listen(dsn)` (or use `connect`, which sets it for you).
-Without it, workers still pick up new work within `poll_max`.
+Cross-process wakeups are always on: the store opens a `LISTEN` connection from
+the same parameters it builds the pool with, and every write that makes a job
+claimable (an enqueue, a retry, a pause's resume, a release, a recovered stale
+claim) signals it. `poll_max` only bounds the delay of a dropped notification.
 
 ## 15. Deploying: producers and workers as separate binaries
 
@@ -504,4 +508,5 @@ recovery, shutdown, and observability — is policy you configure.
 [`Store`]: https://docs.rs/venturi/latest/venturi/store/trait.Store.html
 [`Pending`]: https://docs.rs/venturi/latest/venturi/task/struct.Pending.html
 [`Ulid`]: https://docs.rs/ulid/latest/ulid/struct.Ulid.html
-[`PostgresStore::new`]: https://docs.rs/venturi/latest/venturi/postgres/struct.PostgresStore.html#method.new
+[`connect_rustls`]: https://docs.rs/venturi/latest/venturi/postgres/struct.PostgresStore.html#method.connect_rustls
+[`from_config`]: https://docs.rs/venturi/latest/venturi/postgres/struct.PostgresStore.html#method.from_config

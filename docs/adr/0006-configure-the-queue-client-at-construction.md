@@ -15,10 +15,13 @@ database. Fixed compile-time names and intervals would prevent that.
 ## Decision
 
 The queue client is configured when it is created. The configuration includes at
-least: the database connection (including the database it targets), the name of
-the queue table, and the poll fallback interval (ADR 4). The full configuration
-surface is still being defined; this ADR fixes that these are construction-time
-settings on the client instance rather than global constants.
+least: the database connection parameters (the connection config and TLS
+connector, including the database it targets), the name of the queue table, and
+the poll fallback interval (ADR 4). The adapter is given these parameters rather
+than a pre-built pool, so it builds both its claim pool and its always-on
+listening connection (ADR 4) from them. The full configuration surface is still
+being defined; this ADR fixes that these are construction-time settings on the
+client instance rather than global constants.
 
 ## Consequences
 

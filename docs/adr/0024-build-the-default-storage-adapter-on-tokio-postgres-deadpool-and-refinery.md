@@ -34,7 +34,11 @@ The default adapter is built on:
   macro does not apply to a statement whose kind list and priority floor vary at
   runtime, so that benefit would be lost while its build-time database requirement
   and heavier footprint would remain.
-- **deadpool-postgres** as the connection pool.
+- **deadpool-postgres** as the connection pool. The adapter owns its connection
+  parameters (a `tokio_postgres` config and a TLS connector) and builds both the
+  pool and the dedicated `LISTEN` connection (ADR 4) from them, so the listener
+  always uses the same transport as the pool and listening needs no separate
+  configuration.
 - **refinery** for migrations. Migrations are authored as ordinary SQL files,
   each using a prefix placeholder (for example `{{prefix}}`) wherever a table name
   appears. Because the tables carry a configurable prefix (ADR 6), the adapter
@@ -47,6 +51,9 @@ The default adapter is built on:
 - **rustls** for TLS, with a no-TLS option for same-host deployments. A shared
   library connects to managed and remote databases that require TLS, and a
   pure-Rust TLS stack keeps C out of the graph where a native-TLS stack would not.
+  The rustls stack and its convenience constructor sit behind an off-by-default
+  `rustls` feature, so a plaintext-only consumer does not compile it; the general
+  constructor still accepts any caller-supplied connector without the feature.
 - **serde** and **serde_json** for the JSONB payload, carried state, and journal
   attachment.
 - the **ulid** crate for identifiers, stored as text (ADR 2), and **chrono** for

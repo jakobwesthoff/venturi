@@ -125,18 +125,21 @@ When the loop cannot make progress by claiming, it sleeps until the soonest of
 four things wakes it (ADR 4, ADR 20):
 
 - a running handler finishes, freeing a slot;
-- a notification arrives on a dedicated listen connection, signalling newly
-  enqueued work;
+- a notification arrives on a dedicated listen connection, signalling that the
+  claimable set changed;
 - a timeout of `min(time until the next future visible_at, poll_max)` elapses;
 - the shutdown signal fires.
 
-The notification path only fires on enqueue. Work that becomes eligible *later*
-produces no notification: a retry whose backoff elapses, a paused job whose resume
-time arrives, a job scheduled for the future. The timeout's first term, computed
-from a cheap indexed lookup of the nearest not-yet-eligible job among the worker's
-kinds, wakes the loop exactly when such a job becomes claimable. `poll_max` bounds
-the wait when nothing is scheduled, so a missed notification delays a job by at
-most `poll_max` rather than stalling the queue.
+A notification fires on every write that returns a job to the claimable set: an
+enqueue, a retry, a paused job's resume, a release, and a recovered stale claim.
+For work that becomes eligible only *later* (a future enqueue, a backoff retry, a
+paused job's resume time), the notification fires when the row is written, not at
+its eligibility instant; it tells a worker its computed wait is stale, and the
+worker recomputes. The timeout's first term, a cheap indexed lookup of the nearest
+not-yet-eligible job among the worker's kinds, then wakes the loop exactly when
+that job becomes claimable. `poll_max` bounds the wait when nothing is scheduled,
+so a missed notification delays a job by at most `poll_max` rather than stalling
+the queue.
 
 ## Settlement
 

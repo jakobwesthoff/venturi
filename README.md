@@ -41,7 +41,8 @@ serde = { version = "1", features = ["derive"] }
 ```
 
 The default `postgres` feature enables the PostgreSQL adapter. The optional
-`metrics` feature emits through the vendor-neutral `metrics` facade.
+`metrics` feature emits through the vendor-neutral `metrics` facade. The optional
+`rustls` feature adds the `connect_rustls` TLS constructor.
 
 ## Quick start
 
@@ -80,7 +81,7 @@ impl Handler<App> for SendEmail {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dsn = "host=localhost user=postgres password=postgres dbname=postgres";
-    let store = Arc::new(PostgresStore::connect(dsn, "venturi").await?);
+    let store = Arc::new(PostgresStore::connect(dsn, "venturi")?);
     store.migrate().await?;
 
     // Produce.

@@ -33,9 +33,9 @@ use tokio_postgres::{AsyncMessage, Client, Socket};
 pub(crate) type ListenFactory = Arc<
     dyn Fn(
             String,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<(Client, UnboundedReceiver<()>), Error>> + Send>,
-        > + Send
+        )
+            -> Pin<Box<dyn Future<Output = Result<(Client, UnboundedReceiver<()>), Error>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -69,7 +69,10 @@ pub(crate) struct PgNotifier {
 
 impl PgNotifier {
     /// Connect a dedicated listener through `factory` and `LISTEN` on `channel`.
-    pub(crate) async fn connect(factory: ListenFactory, channel: String) -> Result<PgNotifier, Error> {
+    pub(crate) async fn connect(
+        factory: ListenFactory,
+        channel: String,
+    ) -> Result<PgNotifier, Error> {
         let (client, wakeups) = factory(channel.clone()).await?;
         Ok(PgNotifier {
             factory,

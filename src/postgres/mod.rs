@@ -796,7 +796,9 @@ mod tests {
         assert!(notifies_on_repend(&Settlement::Release { visible_at: now }));
 
         // Terminal: no claimable work is produced, so no wakeup.
-        assert!(!notifies_on_repend(&Settlement::Complete { finished_at: now }));
+        assert!(!notifies_on_repend(&Settlement::Complete {
+            finished_at: now
+        }));
         assert!(!notifies_on_repend(&Settlement::Dead {
             finished_at: now,
             failure_count: 3,

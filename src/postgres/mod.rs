@@ -173,13 +173,18 @@ impl Store for PostgresStore {
 
         let result = migrations::apply(client, &self.prefix).await;
 
-        // Release the lock regardless of the migration outcome before surfacing
-        // it, so a failed migration does not leave the lock held for the session.
-        client
+        // Release the lock regardless of the migration outcome, so a failed
+        // migration does not leave it held for the session. The migration result
+        // takes precedence when surfacing: a successful migration whose unlock
+        // happened to fail must not be reported as a failure, since the session
+        // lock is released anyway when the connection closes.
+        let unlock = client
             .execute("SELECT pg_advisory_unlock($1)", &[&lock_id])
-            .await?;
+            .await;
 
-        result
+        result?;
+        unlock?;
+        Ok(())
     }
 
     async fn enqueue(&self, job: &NewJob) -> Result<(), Error> {

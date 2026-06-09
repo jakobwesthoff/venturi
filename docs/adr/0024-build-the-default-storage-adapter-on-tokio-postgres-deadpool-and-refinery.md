@@ -6,6 +6,8 @@ Date: 2026-06-07
 
 Accepted
 
+Amended by [26. Keep PostgreSQL as the only backend and remove the postgres feature](0026-keep-postgresql-as-the-only-backend-and-remove-the-postgres-feature.md)
+
 ## Context
 
 Storage sits behind a backend trait (ADR 8), so the concrete database technology

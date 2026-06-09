@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Builder and config setters now clamp degenerate inputs to a safe bound instead
   of letting them surface as a runtime misbehaviour, matching the existing
-  `concurrency(0) -> 1` convention: `WorkerBuilder::lease` is clamped to
-  `[1s, 365d]` (a near-zero lease expired before processing and risked duplicate
-  execution; an absurd one overflowed the backing interval arithmetic),
+  `concurrency(0) -> 1` convention: `WorkerBuilder::lease` and the per-task
+  `Task::lease` override are clamped to `[1s, 365d]` (a near-zero lease expired
+  before processing and risked duplicate execution; an absurd one overflowed the
+  backing interval arithmetic),
   `WorkerBuilder::poll_max` to a `1ms` floor (zero busy-spun the claim loop),
   `PostgresStore::with_max_pool_size(0)` to `1` (a zero-size pool can never hand
   out a connection), and `Backoff::new` floors `base` to `1ms` and raises `cap`

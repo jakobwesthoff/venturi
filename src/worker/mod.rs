@@ -62,6 +62,15 @@ const MAX_LEASE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 /// idle wait zero, busy-spinning the claim loop; one millisecond keeps it bounded.
 const MIN_POLL_MAX: Duration = Duration::from_millis(1);
 
+/// Bound a claim lease to the supported range, shared by the worker-default
+/// setter and the per-task `Task::lease` override so both reject the same
+/// degenerate values: a near-zero lease expires before the run settles (letting
+/// another worker reclaim it mid-run), and an absurd one overflows the backing
+/// `interval '1 second' * lease_secs` arithmetic.
+fn clamp_lease(lease: Duration) -> Duration {
+    lease.clamp(MIN_LEASE, MAX_LEASE)
+}
+
 /// The priority floors, by numeric tier, used by the rotation: 0 admits all
 /// tiers (high-first), 1 reserves a claim for Normal and Low, 2 for Low only.
 const FLOOR_ALL: i16 = 0;
@@ -196,7 +205,7 @@ where
     /// and an absurdly large one overflows the backing interval arithmetic.
     #[must_use]
     pub fn lease(mut self, d: Duration) -> Self {
-        self.config.lease = d.clamp(MIN_LEASE, MAX_LEASE);
+        self.config.lease = clamp_lease(d);
         self
     }
 
@@ -575,10 +584,15 @@ where
 
     /// Apply a per-task lease override after the claim, which only stamps the
     /// worker default. A no-op when the task uses the default.
+    ///
+    /// The override is clamped to the same bounds as the worker default, so a task
+    /// returning a degenerate `Task::lease` cannot stamp an already-expired or
+    /// interval-overflowing lease.
     async fn apply_task_lease(&self, job: &crate::store::JobRecord) {
         let Some(lease) = self.registry.lease_for(&job.kind, &job.payload) else {
             return;
         };
+        let lease = clamp_lease(lease);
         if lease == self.config.lease {
             return;
         }
@@ -897,6 +911,15 @@ mod tests {
     use crate::test_support::FakeStore;
     use serde::{Deserialize, Serialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn clamp_lease_floors_and_caps_degenerate_values() {
+        assert_eq!(clamp_lease(Duration::ZERO), MIN_LEASE);
+        assert_eq!(clamp_lease(Duration::from_secs(u64::MAX)), MAX_LEASE);
+        // A value already in range passes through untouched.
+        let mid = Duration::from_secs(60);
+        assert_eq!(clamp_lease(mid), mid);
+    }
 
     #[test]
     fn builder_clamps_degenerate_lease_and_poll_max() {

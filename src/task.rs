@@ -249,6 +249,9 @@ pub trait Task: Serialize + DeserializeOwned + Send + Sync + 'static + Sized {
     /// A per-task override of the claim lease. `None` (the default) uses the
     /// worker default. A task known to run long can request a longer lease so a
     /// healthy worker is not reclaimed mid-run.
+    ///
+    /// The returned lease is clamped to `[1s, 365d]`, the same bounds as the
+    /// worker default.
     fn lease(&self) -> Option<Duration> {
         None
     }

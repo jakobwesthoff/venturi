@@ -399,6 +399,9 @@ pub trait Store: Send + Sync {
     /// re-pending a claim that has since been reclaimed and re-run, which would
     /// otherwise regress `failure_count` and journal a stale `run_no`. Returns
     /// whether this call recovered it.
+    ///
+    /// `failure_count` is the value to write, not an increment; the caller
+    /// pre-computes `stored_failure_count + 1`.
     async fn recover(
         &self,
         id: Ulid,

@@ -80,9 +80,30 @@ pub(crate) async fn apply(client: &mut Client, prefix: &str) -> Result<(), Error
 /// traits without pulling in refinery's native-tls-bound postgres feature.
 struct PgMigrationClient<'a>(&'a mut Client);
 
+/// An error raised by the refinery bridge: either the driver failed, or a row in
+/// refinery's history table could not be parsed into the form refinery expects.
+///
+/// The latter cannot happen for history this code wrote; it guards against a row
+/// corrupted by a manual edit, a partial restore, or a future refinery format
+/// change, surfacing it as a recoverable error rather than panicking the runner.
+#[derive(Debug, thiserror::Error)]
+enum MigrationBridgeError {
+    /// A `tokio_postgres` operation failed.
+    #[error(transparent)]
+    Driver(#[from] PgError),
+    /// A migration-history column held a value this bridge could not parse.
+    #[error("migration history row has a malformed {field}: {value:?}")]
+    MalformedHistory {
+        /// The history column that failed to parse.
+        field: &'static str,
+        /// The raw text that did not parse.
+        value: String,
+    },
+}
+
 #[async_trait]
 impl AsyncTransaction for PgMigrationClient<'_> {
-    type Error = PgError;
+    type Error = MigrationBridgeError;
 
     /// Run a batch of statements in one transaction, committing atomically.
     ///
@@ -122,12 +143,19 @@ impl AsyncQuery<Vec<Migration>> for PgMigrationClient<'_> {
             let version: i32 = row.get(0);
             let name: String = row.get(1);
             let applied_on: String = row.get(2);
-            let applied_on = OffsetDateTime::parse(&applied_on, &Rfc3339)
-                .expect("refinery records applied_on in RFC 3339");
+            let applied_on = OffsetDateTime::parse(&applied_on, &Rfc3339).map_err(|_| {
+                MigrationBridgeError::MalformedHistory {
+                    field: "applied_on",
+                    value: applied_on.clone(),
+                }
+            })?;
             let checksum: String = row.get(3);
-            let checksum = checksum
-                .parse::<u64>()
-                .expect("refinery records checksum as a decimal u64");
+            let checksum = checksum.parse::<u64>().map_err(|_| {
+                MigrationBridgeError::MalformedHistory {
+                    field: "checksum",
+                    value: checksum.clone(),
+                }
+            })?;
 
             applied.push(Migration::applied(version, name, applied_on, checksum));
         }

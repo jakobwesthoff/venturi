@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A corrupted migration-history row (malformed `applied_on` or `checksum`, e.g.
+  from a manual edit, a partial restore, or a future refinery format change) now
+  surfaces as a recoverable `Error::Migration` instead of panicking the
+  migration runner, matching how the adapter handles every other malformed-DB
+  case.
 - A run that completes successfully but whose carry cannot be serialized to JSON
   is now journaled with an accurate note ("handler completed but its carry could
   not be serialized") and settled dead through the normal outcome path, instead

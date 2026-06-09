@@ -814,11 +814,17 @@ fn release_slot(by_kind: &mut HashMap<String, usize>, kind: &str) {
     }
 }
 
-/// Add a `std::time::Duration` to a UTC instant, saturating on overflow.
+/// Add a `std::time::Duration` to a UTC instant, saturating to the far future on
+/// overflow.
+///
+/// An overflowing delay means "schedule effectively forever from now" (a very
+/// long `pause_in` or `resume_in`), so it saturates to [`DateTime::<Utc>::MAX_UTC`]
+/// rather than collapsing to `now`. Collapsing to `now` would make the job
+/// immediately eligible again and spin a tight claim/pause cycle.
 fn add_duration(now: DateTime<Utc>, delta: Duration) -> DateTime<Utc> {
     match chrono::Duration::from_std(delta) {
-        Ok(delta) => now.checked_add_signed(delta).unwrap_or(now),
-        Err(_) => now,
+        Ok(delta) => now.checked_add_signed(delta).unwrap_or(DateTime::<Utc>::MAX_UTC),
+        Err(_) => DateTime::<Utc>::MAX_UTC,
     }
 }
 
@@ -970,6 +976,29 @@ mod tests {
             store.count(crate::store::Status::Pending),
             0,
             "the completed job must not be released back to pending"
+        );
+    }
+
+    #[test]
+    fn add_duration_saturates_to_the_far_future_on_overflow() {
+        let now = Utc::now();
+        // A delay too large for chrono represents "park effectively forever". It
+        // must land far in the future, not collapse to `now`: collapsing to `now`
+        // would make a long `pause_in` immediately eligible again and spin the
+        // claim/pause cycle.
+        let parked = add_duration(now, Duration::from_secs(u64::MAX));
+        assert!(
+            parked > now + chrono::Duration::days(365_000),
+            "an overflowing delay must saturate to the far future, got {parked}"
+        );
+
+        // A `checked_add_signed` overflow (a representable std duration that still
+        // pushes past chrono's range) saturates the same way.
+        let near_max = DateTime::<Utc>::MAX_UTC - chrono::Duration::days(1);
+        let pushed = add_duration(near_max, Duration::from_secs(7 * 24 * 60 * 60));
+        assert!(
+            pushed >= near_max,
+            "an add that overflows the representable range must not move backward"
         );
     }
 

@@ -437,10 +437,12 @@ impl Store for FakeStore {
     }
 }
 
-/// Add a `std::time::Duration` to a UTC instant, saturating on overflow.
+/// Add a `std::time::Duration` to a UTC instant, saturating to the far future on
+/// overflow, mirroring the worker's own arithmetic so lease and visibility times
+/// behave identically in the fake.
 fn add_duration(now: DateTime<Utc>, delta: Duration) -> DateTime<Utc> {
     match chrono::Duration::from_std(delta) {
-        Ok(delta) => now.checked_add_signed(delta).unwrap_or(now),
-        Err(_) => now,
+        Ok(delta) => now.checked_add_signed(delta).unwrap_or(DateTime::<Utc>::MAX_UTC),
+        Err(_) => DateTime::<Utc>::MAX_UTC,
     }
 }

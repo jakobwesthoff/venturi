@@ -91,7 +91,10 @@ async fn keyset_pages_in_created_desc_order_without_gaps_or_repeats() {
     let paged = page_all(&store, None, 3).await;
     let got: Vec<(DateTime<Utc>, Ulid)> = paged.iter().map(|r| (r.created_at, r.id)).collect();
 
-    assert_eq!(got, expected, "paged order must be the full created_at desc, id desc order");
+    assert_eq!(
+        got, expected,
+        "paged order must be the full created_at desc, id desc order"
+    );
     assert_eq!(got.len(), 10, "every row appears exactly once across pages");
 }
 
@@ -116,7 +119,10 @@ async fn keyset_breaks_ties_on_equal_created_at_by_id_desc() {
     let got: Vec<Ulid> = paged.iter().map(|r| r.id).collect();
 
     ids.sort_by(|a, b| b.cmp(a)); // id desc
-    assert_eq!(got, ids, "equal created_at rows must page in strict id desc order");
+    assert_eq!(
+        got, ids,
+        "equal created_at rows must page in strict id desc order"
+    );
 }
 
 #[tokio::test]
@@ -158,10 +164,16 @@ async fn keyset_composes_with_a_kind_filter() {
     for seconds in [1, 3, 5, 7, 9] {
         let id = Ulid::new();
         alpha_keys.push((at(seconds), id));
-        store.enqueue(&new_job(id, "alpha", at(seconds))).await.expect("enqueue");
+        store
+            .enqueue(&new_job(id, "alpha", at(seconds)))
+            .await
+            .expect("enqueue");
     }
     for seconds in [2, 4, 6, 8] {
-        store.enqueue(&new_job(Ulid::new(), "beta", at(seconds))).await.expect("enqueue");
+        store
+            .enqueue(&new_job(Ulid::new(), "beta", at(seconds)))
+            .await
+            .expect("enqueue");
     }
 
     let mut expected = alpha_keys.clone();
@@ -170,6 +182,12 @@ async fn keyset_composes_with_a_kind_filter() {
     let paged = page_all(&store, Some("alpha"), 2).await;
     let got: Vec<(DateTime<Utc>, Ulid)> = paged.iter().map(|r| (r.created_at, r.id)).collect();
 
-    assert_eq!(got, expected, "filtered pages stay within the kind and in keyset order");
-    assert!(paged.iter().all(|r| r.kind == "alpha"), "no other kind leaks into the page");
+    assert_eq!(
+        got, expected,
+        "filtered pages stay within the kind and in keyset order"
+    );
+    assert!(
+        paged.iter().all(|r| r.kind == "alpha"),
+        "no other kind leaks into the page"
+    );
 }

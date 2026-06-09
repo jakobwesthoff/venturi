@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## 0.2.0 - 2026-06-09
 
 ### Added
 
@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `created_at DESC` alone), so rows sharing a `created_at` have a deterministic
   order — the basis for stable keyset pagination.
 
-## [0.1.0] - 2026-06-08
+## 0.1.0 - 2026-06-08
 
 Initial release.
 
@@ -51,5 +51,3 @@ Initial release.
 - PostgreSQL storage adapter (`postgres` feature, enabled by default) with
   schema migrations.
 
-[Unreleased]: https://github.com/jakobwesthoff/venturi/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/jakobwesthoff/venturi/releases/tag/v0.1.0

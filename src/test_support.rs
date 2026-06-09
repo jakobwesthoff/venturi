@@ -473,7 +473,9 @@ impl Store for FakeStore {
 /// behave identically in the fake.
 fn add_duration(now: DateTime<Utc>, delta: Duration) -> DateTime<Utc> {
     match chrono::Duration::from_std(delta) {
-        Ok(delta) => now.checked_add_signed(delta).unwrap_or(DateTime::<Utc>::MAX_UTC),
+        Ok(delta) => now
+            .checked_add_signed(delta)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC),
         Err(_) => DateTime::<Utc>::MAX_UTC,
     }
 }

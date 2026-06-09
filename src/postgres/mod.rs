@@ -323,7 +323,14 @@ impl Store for PostgresStore {
                 );
                 tx.execute(
                     &sql,
-                    &[&id, &claimed_by, &run_no, &visible_at, &failure_count, &carry],
+                    &[
+                        &id,
+                        &claimed_by,
+                        &run_no,
+                        &visible_at,
+                        &failure_count,
+                        &carry,
+                    ],
                 )
                 .await?
             }

@@ -113,7 +113,12 @@ async fn job_by_id_returns_the_full_record_or_none() {
     let store = Arc::new(db.store("venturi").await);
     let queue = Queue::new(store.clone());
 
-    let id = queue.enqueue(Detailed { label: "render".into() }).await.expect("enqueue");
+    let id = queue
+        .enqueue(Detailed {
+            label: "render".into(),
+        })
+        .await
+        .expect("enqueue");
 
     let record = queue.job(id).await.expect("lookup").expect("job exists");
     assert_eq!(record.id, id);

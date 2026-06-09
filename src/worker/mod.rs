@@ -693,7 +693,13 @@ where
         };
 
         self.store
-            .settle(finished.id, &self.identity, finished.run_no, settlement, journal)
+            .settle(
+                finished.id,
+                &self.identity,
+                finished.run_no,
+                settlement,
+                journal,
+            )
             .await?;
         Ok(())
     }
@@ -833,7 +839,9 @@ fn release_slot(by_kind: &mut HashMap<String, usize>, kind: &str) {
 /// immediately eligible again and spin a tight claim/pause cycle.
 fn add_duration(now: DateTime<Utc>, delta: Duration) -> DateTime<Utc> {
     match chrono::Duration::from_std(delta) {
-        Ok(delta) => now.checked_add_signed(delta).unwrap_or(DateTime::<Utc>::MAX_UTC),
+        Ok(delta) => now
+            .checked_add_signed(delta)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC),
         Err(_) => DateTime::<Utc>::MAX_UTC,
     }
 }
@@ -1074,7 +1082,10 @@ mod tests {
             )
             .await
             .expect("settle stale");
-        assert!(!stale, "a stale run must not settle under a matching identity");
+        assert!(
+            !stale,
+            "a stale run must not settle under a matching identity"
+        );
         assert_eq!(store.job(id).expect("job").status, Status::Claimed);
 
         // The live second claim settles normally.

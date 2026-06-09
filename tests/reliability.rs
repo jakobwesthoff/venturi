@@ -174,7 +174,13 @@ async fn ownership_guard_prevents_self_reclaim_double_settle() {
         .expect("job");
     tokio::time::sleep(Duration::from_millis(250)).await;
     store
-        .recover(id, Utc::now(), 1, claim_one.run_count, stale_journal("unit"))
+        .recover(
+            id,
+            Utc::now(),
+            1,
+            claim_one.run_count,
+            stale_journal("unit"),
+        )
         .await
         .expect("recover");
     let claim_two = store

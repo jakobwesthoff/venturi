@@ -252,6 +252,12 @@ impl Store for FakeStore {
                     && filter
                         .finished_until
                         .is_none_or(|until| job.finished_at.is_some_and(|f| f < until))
+                    // Keyset cursor: under the `created_at DESC, id DESC` order, a
+                    // page is every row strictly older than the cursor tuple,
+                    // mirroring the adapter's `(created_at, id) < ($ts, $id)`.
+                    && filter
+                        .created_before
+                        .is_none_or(|(ts, id)| (job.created_at, job.id) < (ts, id))
             })
             .cloned()
             .collect();
@@ -469,5 +475,53 @@ fn add_duration(now: DateTime<Utc>, delta: Duration) -> DateTime<Utc> {
     match chrono::Duration::from_std(delta) {
         Ok(delta) => now.checked_add_signed(delta).unwrap_or(DateTime::<Utc>::MAX_UTC),
         Err(_) => DateTime::<Utc>::MAX_UTC,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::HistoryFilter;
+
+    fn job_at(created: DateTime<Utc>) -> NewJob {
+        NewJob {
+            id: Ulid::new(),
+            kind: "k".to_owned(),
+            payload: serde_json::Value::Null,
+            priority: 1,
+            created_at: created,
+            visible_at: created,
+            carry: serde_json::Value::Null,
+            dedup_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn query_jobs_honours_the_created_before_cursor() {
+        let store = FakeStore::new();
+        let t = Utc::now();
+        // Three jobs at distinct, ascending creation times.
+        let a = job_at(t);
+        let b = job_at(t + chrono::Duration::seconds(1));
+        let c = job_at(t + chrono::Duration::seconds(2));
+        for job in [&a, &b, &c] {
+            store.enqueue(job).await.expect("enqueue");
+        }
+
+        // Under the query's `created_at DESC, id DESC` order, the keyset cursor at
+        // `b` returns only rows strictly older than `(b.created_at, b.id)` — just
+        // `a`. Without the cursor applied, the fake returns all three.
+        let filter = HistoryFilter {
+            created_before: Some((b.created_at, b.id)),
+            ..Default::default()
+        };
+        let ids: Vec<Ulid> = store
+            .query_jobs(&filter)
+            .await
+            .expect("query")
+            .into_iter()
+            .map(|job| job.id)
+            .collect();
+        assert_eq!(ids, vec![a.id], "only rows older than the cursor return");
     }
 }

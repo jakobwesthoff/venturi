@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialization messages instead of only a generic context line. Worker log
   lines and the dead-job journal note (which render `Display`) now carry the
   actual failure detail.
+- The in-memory test `Store` now applies the `created_before` keyset cursor in
+  its history query, matching the PostgreSQL adapter; it had ignored the cursor
+  and returned the first page for every request.
 
 ## 0.2.0 - 2026-06-09
 

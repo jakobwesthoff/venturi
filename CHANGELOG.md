@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Builder and config setters now clamp degenerate inputs to a safe bound instead
+  of letting them surface as a runtime misbehaviour, matching the existing
+  `concurrency(0) -> 1` convention: `WorkerBuilder::lease` is clamped to
+  `[1s, 365d]` (a near-zero lease expired before processing and risked duplicate
+  execution; an absurd one overflowed the backing interval arithmetic),
+  `WorkerBuilder::poll_max` to a `1ms` floor (zero busy-spun the claim loop),
+  `PostgresStore::with_max_pool_size(0)` to `1` (a zero-size pool can never hand
+  out a connection), and `Backoff::new` floors `base` to `1ms` and raises `cap`
+  to at least `base`. `register_capped`'s pre-existing `0 -> 1` clamp is now
+  documented. All setters stay infallible.
 - Trimmed the crate's `tokio` dependency from `features = ["full"]` to the set
   the library actually uses (`rt`, `sync`, `time`, `macros`), and dropped the
   unused direct `refinery` dependency (only `refinery-core` is used). Consumers

@@ -123,9 +123,12 @@ impl PostgresStore {
     /// several stores sharing it. Only the work pool is affected; the dedicated
     /// `LISTEN` connection is separate. The pool connects lazily, so this sets
     /// the ceiling the pool grows to under load rather than opening anything now.
+    ///
+    /// A `max_size` of `0` is clamped to `1`: a zero-size pool could never hand
+    /// out a connection, so every later `get()` would error or wait forever.
     #[must_use]
     pub fn with_max_pool_size(self, max_size: usize) -> Self {
-        self.pool.resize(max_size);
+        self.pool.resize(max_size.max(1));
         self
     }
 
@@ -924,6 +927,15 @@ mod tests {
             .expect("construct store")
             .with_max_pool_size(7);
         assert_eq!(store.pool().status().max_size, 7);
+    }
+
+    #[test]
+    fn with_max_pool_size_clamps_zero_to_one() {
+        // A zero-size pool could never hand out a connection, so it is clamped.
+        let store = PostgresStore::connect(TEST_DSN, "venturi")
+            .expect("construct store")
+            .with_max_pool_size(0);
+        assert_eq!(store.pool().status().max_size, 1);
     }
 
     #[test]

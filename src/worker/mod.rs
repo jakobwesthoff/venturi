@@ -48,6 +48,20 @@ const DEFAULT_JITTER_FRACTION: f64 = 0.5;
 /// per tier, while lower tiers keep a guaranteed share.
 const DEFAULT_PRIORITY_RATIO: u32 = 4;
 
+/// The floor a configured claim lease is clamped to. A near-zero lease expires at
+/// or before the claim commits, so `recover_stale` could re-pend a job mid-run
+/// (a guaranteed duplicate execution); one second keeps the lease in the future.
+const MIN_LEASE: Duration = Duration::from_secs(1);
+
+/// The ceiling a configured claim lease is clamped to. The lease feeds a
+/// PostgreSQL `interval '1 second' * lease_secs`, which overflows for absurd
+/// values; 365 days stays far below that bound while exceeding any real lease.
+const MAX_LEASE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+/// The floor a configured poll ceiling is clamped to. A zero `poll_max` makes the
+/// idle wait zero, busy-spinning the claim loop; one millisecond keeps it bounded.
+const MIN_POLL_MAX: Duration = Duration::from_millis(1);
+
 /// The priority floors, by numeric tier, used by the rotation: 0 admits all
 /// tiers (high-first), 1 reserves a claim for Normal and Low, 2 for Low only.
 const FLOOR_ALL: i16 = 0;
@@ -145,6 +159,9 @@ where
     /// number of workers. At-cap kinds are excluded from claiming until one of
     /// their in-flight jobs settles, so their jobs stay pending rather than
     /// claimed-and-idle.
+    ///
+    /// A `max` of `0` is clamped to `1`; a zero cap would exclude the kind from
+    /// claiming entirely.
     #[must_use]
     pub fn register_capped<T>(mut self, max: usize) -> Self
     where
@@ -163,18 +180,23 @@ where
     }
 
     /// The upper bound on how long the loop waits when nothing is scheduled.
-    /// Defaults to 30 seconds.
+    /// Defaults to 30 seconds. A value below 1ms is clamped up to 1ms so the idle
+    /// loop always waits rather than busy-spinning its claim queries.
     #[must_use]
     pub fn poll_max(mut self, d: Duration) -> Self {
-        self.config.poll_max = d;
+        self.config.poll_max = d.max(MIN_POLL_MAX);
         self
     }
 
     /// The default claim lease. Defaults to 15 minutes; a task may request a
     /// longer one through `Task::lease`.
+    ///
+    /// Clamped to `[1s, 365d]`: a near-zero lease would expire before the job is
+    /// processed and let another worker reclaim it mid-run (duplicate execution),
+    /// and an absurdly large one overflows the backing interval arithmetic.
     #[must_use]
     pub fn lease(mut self, d: Duration) -> Self {
-        self.config.lease = d;
+        self.config.lease = d.clamp(MIN_LEASE, MAX_LEASE);
         self
     }
 
@@ -875,6 +897,20 @@ mod tests {
     use crate::test_support::FakeStore;
     use serde::{Deserialize, Serialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn builder_clamps_degenerate_lease_and_poll_max() {
+        let store = Arc::new(FakeStore::new());
+
+        let clamped = Worker::builder((), store.clone())
+            .lease(Duration::ZERO)
+            .poll_max(Duration::ZERO);
+        assert_eq!(clamped.config.lease, MIN_LEASE);
+        assert_eq!(clamped.config.poll_max, MIN_POLL_MAX);
+
+        let capped = Worker::builder((), store).lease(Duration::from_secs(u64::MAX));
+        assert_eq!(capped.config.lease, MAX_LEASE);
+    }
 
     /// Shared state that records peak concurrency and completion count.
     #[derive(Clone)]

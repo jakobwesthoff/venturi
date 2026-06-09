@@ -11,6 +11,11 @@
 use std::time::Duration;
 use ulid::Ulid;
 
+/// The floor a [`Backoff`] base delay is clamped to. A zero base makes every
+/// computed delay zero (a tight retry loop straight to the backstop); one
+/// millisecond keeps the curve meaningful.
+const MIN_BASE: Duration = Duration::from_millis(1);
+
 /// Per-task override of the retry backoff's base delay and ceiling.
 ///
 /// The worker holds a default [`Backoff`]; a task may return its own from
@@ -26,8 +31,13 @@ impl Backoff {
     /// A backoff with the given base delay and ceiling.
     ///
     /// `base` scales the per-attempt curve; `cap` is the hard upper bound on any
-    /// single delay.
+    /// single delay. Degenerate inputs are clamped: `base` is floored to 1ms (a
+    /// zero base makes every delay zero), and `cap` is raised to at least `base`
+    /// (a `cap` below `base` would otherwise clamp every delay to `cap`,
+    /// inverting intent).
     pub fn new(base: Duration, cap: Duration) -> Backoff {
+        let base = base.max(MIN_BASE);
+        let cap = cap.max(base);
         Backoff { base, cap }
     }
 
@@ -148,6 +158,19 @@ mod tests {
         let backoff = Backoff::default();
         assert_eq!(backoff.base(), Duration::from_millis(500));
         assert_eq!(backoff.cap(), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn new_clamps_degenerate_base_and_cap() {
+        // A zero base floors above zero so delays are not uniformly zero.
+        let floored = Backoff::new(Duration::ZERO, Duration::from_secs(10));
+        assert_eq!(floored.base(), MIN_BASE);
+        assert_eq!(floored.cap(), Duration::from_secs(10));
+
+        // A cap below base is raised to base rather than inverting intent.
+        let raised = Backoff::new(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(raised.base(), Duration::from_secs(5));
+        assert_eq!(raised.cap(), Duration::from_secs(5));
     }
 
     #[test]

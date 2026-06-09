@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An overflowing `pause`/retry delay now parks the job in the far future instead
   of collapsing to `now`, which had made a very long pause immediately eligible
   again and spun a tight claim/pause loop.
+- `Error`'s `Display` now includes the underlying driver, pool, migration, and
+  serialization messages instead of only a generic context line. Worker log
+  lines and the dead-job journal note (which render `Display`) now carry the
+  actual failure detail.
 
 ## 0.2.0 - 2026-06-09
 

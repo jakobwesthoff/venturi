@@ -13,23 +13,23 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum Error {
     /// A database statement failed at the driver level.
-    #[error("while talking to PostgreSQL")]
+    #[error("while talking to PostgreSQL: {0}")]
     Database(#[from] tokio_postgres::Error),
 
     /// A connection could not be obtained from the pool.
-    #[error("while acquiring a pooled connection")]
+    #[error("while acquiring a pooled connection: {0}")]
     Pool(#[from] deadpool_postgres::PoolError),
 
     /// The connection pool could not be built from the given configuration.
-    #[error("while building the connection pool")]
+    #[error("while building the connection pool: {0}")]
     PoolBuild(#[from] deadpool_postgres::BuildError),
 
     /// Applying the schema migrations failed.
-    #[error("while applying migrations")]
+    #[error("while applying migrations: {0}")]
     Migration(#[from] refinery_core::Error),
 
     /// A task payload or carried state could not be (de)serialized to JSON.
-    #[error("while (de)serializing a job payload or carry")]
+    #[error("while (de)serializing a job payload or carry: {0}")]
     Serialization(#[from] serde_json::Error),
 
     /// A stored job referenced a `kind` that is not registered with this worker.
@@ -42,4 +42,28 @@ pub enum Error {
     /// A configuration value was invalid (for example an empty table prefix).
     #[error("invalid configuration: {0}")]
     Config(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_the_underlying_source() {
+        // The driver/serde variants carry their detail in `source()`; the worker
+        // logs and the dead-job journal note render `Display`, so `Display` must
+        // surface the underlying message rather than the bare context.
+        let serde_err = serde_json::from_str::<i32>("not a number").unwrap_err();
+        let source_text = serde_err.to_string();
+        let shown = Error::from(serde_err).to_string();
+
+        assert!(
+            shown.contains("(de)serializing"),
+            "keeps the context: {shown}"
+        );
+        assert!(
+            shown.contains(&source_text),
+            "includes the source detail {source_text:?}: {shown}"
+        );
+    }
 }

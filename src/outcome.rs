@@ -124,7 +124,13 @@ impl std::fmt::Display for TaskError {
 
 impl TaskError {
     /// The wrapped cause, if any.
-    pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    ///
+    /// Deliberately **not** named `source`: `TaskError` does not implement
+    /// [`std::error::Error`] (see the `From` impl below for why), so a `source`
+    /// inherent method would shadow the trait method without participating in
+    /// trait-based error-chain walking such as [`std::error::Error::source`] or
+    /// `anyhow::Error::chain`.
+    pub fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.source
             .as_ref()
             .map(|boxed| boxed.as_ref() as &(dyn std::error::Error + 'static))
@@ -171,6 +177,13 @@ mod tests {
         assert!(err.is_permanent());
         assert_eq!(err.message(), "boom: gone");
         assert_eq!(err.to_string(), "boom: gone");
+    }
+
+    #[test]
+    fn cause_exposes_the_wrapped_error() {
+        let err = TaskError::permanent(Boom("disk"));
+        let cause = err.cause().expect("a wrapped cause is present");
+        assert_eq!(cause.to_string(), "boom: disk");
     }
 
     #[test]

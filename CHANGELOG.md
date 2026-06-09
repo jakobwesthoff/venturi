@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `TaskError::source` is renamed to `TaskError::cause`. The old
+  name shadowed [`std::error::Error::source`] even though `TaskError` does not
+  implement that trait, so a caller could invoke it expecting trait-based
+  error-chain walking and silently get a method that does not participate in it.
 - Index tuning (migration `V3__index_tuning`): the claim indexes now carry
   `visible_at` as a trailing key column so future-visible rows are filtered
   in-index without a heap fetch on the hot claim path; a partial

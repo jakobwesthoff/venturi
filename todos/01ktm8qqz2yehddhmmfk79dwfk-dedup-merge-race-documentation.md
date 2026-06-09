@@ -19,6 +19,19 @@ for the documented use cases, but it is currently undocumented.
    UPDATE` on the candidate row before the merge decision so concurrent
    enqueues serialize on it.
 
+## Related: the fallback enqueue resets carry
+
+The same race window has a documentation gap on its fallback path. In
+`apply_merge` (`src/queue.rs:168-193`), when `merge_into` returns `false` because
+the candidate was claimed between `dedup_candidate()` and the merge, the code
+falls back to `insert(incoming, ...)` — a brand-new job that does not inherit the
+now-claimed candidate's `run_count`, `failure_count`, or carry. A `Merge::With`
+that intended to *continue* the in-flight work instead starts from `Default`
+carry. Intentional ("no work is lost"), but surprising and undocumented.
+
+Extend `apply_merge`'s doc comment to state the fallback is a fresh job with
+default carry, not a continuation. Pure documentation; no behavior change.
+
 ## Related test gap
 
 The fallback path in `apply_merge()` (when `merge_into` returns `false` because
@@ -28,6 +41,7 @@ a claim between `dedup_candidate()` and `apply_merge()`.
 
 ## Decision needed
 
-Document-only vs. strengthen to `FOR UPDATE`.
+Document-only vs. strengthen to `FOR UPDATE` (the carry-reset note above is
+document-only regardless).
 
-Source: review finding, `src/queue.rs:96-161`, `src/postgres/mod.rs:619-676`.
+Source: review finding, `src/queue.rs:96-193`, `src/postgres/mod.rs:619-676`.

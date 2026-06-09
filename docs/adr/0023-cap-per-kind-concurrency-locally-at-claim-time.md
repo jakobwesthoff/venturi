@@ -6,6 +6,8 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [20. Run a bounded-concurrency claim and dispatch loop](0020-run-a-bounded-concurrency-claim-and-dispatch-loop.md)
+
 ## Context
 
 A worker has one overall concurrency limit `N` across all the kinds it has
@@ -41,7 +43,7 @@ the existing claim filter and index, so there is no schema change and no new
 index.
 
 Rate control, throttling a kind over time rather than capping concurrency, is a
-separate concern and is deferred (tracked as a todo).
+separate concern and is deferred, tracked as a follow-up item.
 
 ## Consequences
 

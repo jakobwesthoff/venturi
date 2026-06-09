@@ -6,6 +6,16 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [3. Claim jobs with `FOR UPDATE SKIP LOCKED`](0003-claim-jobs-with-for-update-skip-locked.md)
+
+Relates to [13. Let the task decide when to give up, with a configurable backstop](0013-let-the-task-decide-when-to-give-up-with-a-configurable-backstop.md)
+
+Relates to [16. Record every execution and merge in an append-only journal table](0016-record-every-execution-and-merge-in-an-append-only-journal-table.md)
+
+Relates to [18. Expose history query and cleanup APIs](0018-expose-history-query-and-cleanup-apis.md)
+
+Relates to [19. Recover stale claims by lease expiry](0019-recover-stale-claims-by-lease-expiry.md)
+
 ## Context
 
 A job moves through a small set of persisted states as it is enqueued, picked up

@@ -6,6 +6,20 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [3. Claim jobs with `FOR UPDATE SKIP LOCKED`](0003-claim-jobs-with-for-update-skip-locked.md)
+
+Relates to [4. Wake workers with LISTEN/NOTIFY and a polling fallback](0004-wake-workers-with-listen-notify-and-a-polling-fallback.md)
+
+Relates to [11. Signal task outcome through Completed/Pause results, notes, and retryable-by-default errors](0011-signal-task-outcome-through-completed-pause-results-notes-and-retryable-by-default-errors.md)
+
+Relates to [19. Recover stale claims by lease expiry](0019-recover-stale-claims-by-lease-expiry.md)
+
+Relates to [21. Shut down gracefully by draining cooperatively, then releasing](0021-shut-down-gracefully-by-draining-cooperatively-then-releasing.md)
+
+Relates to [23. Cap per-kind concurrency locally at claim time](0023-cap-per-kind-concurrency-locally-at-claim-time.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 A worker must turn claimable jobs into running handlers, bound how many run at

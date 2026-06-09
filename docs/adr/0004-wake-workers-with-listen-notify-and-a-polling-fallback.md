@@ -6,6 +6,14 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [6. Configure the queue client at construction](0006-configure-the-queue-client-at-construction.md)
+
+Relates to [20. Run a bounded-concurrency claim and dispatch loop](0020-run-a-bounded-concurrency-claim-and-dispatch-loop.md)
+
+Relates to [21. Shut down gracefully by draining cooperatively, then releasing](0021-shut-down-gracefully-by-draining-cooperatively-then-releasing.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 Workers must react promptly to claimable work without polling the table in a

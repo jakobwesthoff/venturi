@@ -8,6 +8,12 @@ Accepted
 
 Amended by [26. Keep PostgreSQL as the only backend and remove the postgres feature](0026-keep-postgresql-as-the-only-backend-and-remove-the-postgres-feature.md)
 
+Relates to [7. Provide a layered architecture with independently usable layers](0007-provide-a-layered-architecture-with-independently-usable-layers.md)
+
+Relates to [18. Expose history query and cleanup APIs](0018-expose-history-query-and-cleanup-apis.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 venturi targets PostgreSQL and will use a PostgreSQL client library for its first

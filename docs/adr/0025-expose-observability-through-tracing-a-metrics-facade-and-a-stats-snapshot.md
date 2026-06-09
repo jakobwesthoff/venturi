@@ -6,6 +6,8 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [18. Expose history query and cleanup APIs](0018-expose-history-query-and-cleanup-apis.md)
+
 ## Context
 
 Operators need to see what the queue is doing: per-operation logs, operational

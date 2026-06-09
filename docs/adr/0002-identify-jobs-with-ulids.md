@@ -6,6 +6,10 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [14. Source retry jitter deterministically from the job identifier](0014-source-retry-jitter-deterministically-from-the-job-identifier.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 Every job needs a unique identifier that exists before the row is persisted, so

@@ -6,6 +6,10 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [2. Identify jobs with ULIDs](0002-identify-jobs-with-ulids.md)
+
+Relates to [12. Retry with a visible-at gate, Fibonacci backoff, and proportional jitter](0012-retry-with-a-visible-at-gate-fibonacci-backoff-and-proportional-jitter.md)
+
 ## Context
 
 Retry jitter (ADR 12) needs a cheap, uniformly distributed value in a bounded

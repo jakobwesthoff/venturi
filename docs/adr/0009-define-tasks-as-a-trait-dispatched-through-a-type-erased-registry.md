@@ -6,6 +6,14 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [10. Deduplicate with a candidacy key and a full-task merge decision](0010-deduplicate-with-a-candidacy-key-and-a-full-task-merge-decision.md)
+
+Relates to [11. Signal task outcome through Completed/Pause results, notes, and retryable-by-default errors](0011-signal-task-outcome-through-completed-pause-results-notes-and-retryable-by-default-errors.md)
+
+Relates to [17. Split the task abstraction into Task and Handler](0017-split-the-task-abstraction-into-task-and-handler.md)
+
+Relates to [22. Schedule claims by priority with weighted-slot anti-starvation](0022-schedule-claims-by-priority-with-weighted-slot-anti-starvation.md)
+
 ## Context
 
 A consuming project has several kinds of work, each with its own payload shape

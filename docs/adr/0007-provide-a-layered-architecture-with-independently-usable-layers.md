@@ -6,6 +6,10 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [8. Isolate storage behind a backend trait](0008-isolate-storage-behind-a-backend-trait.md)
+
+Relates to [26. Keep PostgreSQL as the only backend and remove the postgres feature](0026-keep-postgresql-as-the-only-backend-and-remove-the-postgres-feature.md)
+
 ## Context
 
 venturi is meant to be dropped into projects with different needs. Some want a

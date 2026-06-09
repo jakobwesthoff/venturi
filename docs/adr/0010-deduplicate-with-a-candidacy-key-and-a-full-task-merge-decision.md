@@ -6,6 +6,16 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [9. Define tasks as a trait dispatched through a type-erased registry](0009-define-tasks-as-a-trait-dispatched-through-a-type-erased-registry.md)
+
+Relates to [11. Signal task outcome through Completed/Pause results, notes, and retryable-by-default errors](0011-signal-task-outcome-through-completed-pause-results-notes-and-retryable-by-default-errors.md)
+
+Relates to [15. Pass an execution context with run history, typed carried state, and a journal attachment](0015-pass-an-execution-context-with-run-history-typed-carried-state-and-a-journal-attachment.md)
+
+Relates to [16. Record every execution and merge in an append-only journal table](0016-record-every-execution-and-merge-in-an-append-only-journal-table.md)
+
+Relates to [17. Split the task abstraction into Task and Handler](0017-split-the-task-abstraction-into-task-and-handler.md)
+
 ## Context
 
 Real workloads need to coalesce redundant work, but a bare last-write-wins key

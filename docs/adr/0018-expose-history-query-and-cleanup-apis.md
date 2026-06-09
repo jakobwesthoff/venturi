@@ -6,6 +6,14 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [5. Model job lifecycle with pending, claimed, completed, and dead states; retain all jobs](0005-model-job-lifecycle-with-pending-claimed-completed-and-dead-states-retain-all-jobs.md)
+
+Relates to [8. Isolate storage behind a backend trait](0008-isolate-storage-behind-a-backend-trait.md)
+
+Relates to [16. Record every execution and merge in an append-only journal table](0016-record-every-execution-and-merge-in-an-append-only-journal-table.md)
+
+Relates to [25. Expose observability through tracing, a metrics facade, and a stats snapshot](0025-expose-observability-through-tracing-a-metrics-facade-and-a-stats-snapshot.md)
+
 ## Context
 
 Because all jobs and their journal entries are retained (ADR 5, ADR 16),

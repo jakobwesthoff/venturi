@@ -6,6 +6,14 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [11. Signal task outcome through Completed/Pause results, notes, and retryable-by-default errors](0011-signal-task-outcome-through-completed-pause-results-notes-and-retryable-by-default-errors.md)
+
+Relates to [13. Let the task decide when to give up, with a configurable backstop](0013-let-the-task-decide-when-to-give-up-with-a-configurable-backstop.md)
+
+Relates to [14. Source retry jitter deterministically from the job identifier](0014-source-retry-jitter-deterministically-from-the-job-identifier.md)
+
+Relates to [19. Recover stale claims by lease expiry](0019-recover-stale-claims-by-lease-expiry.md)
+
 ## Context
 
 Re-enqueueing a failed job straight back to `pending` with no delay leaves it

@@ -6,6 +6,16 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [5. Model job lifecycle with pending, claimed, completed, and dead states; retain all jobs](0005-model-job-lifecycle-with-pending-claimed-completed-and-dead-states-retain-all-jobs.md)
+
+Relates to [19. Recover stale claims by lease expiry](0019-recover-stale-claims-by-lease-expiry.md)
+
+Relates to [20. Run a bounded-concurrency claim and dispatch loop](0020-run-a-bounded-concurrency-claim-and-dispatch-loop.md)
+
+Relates to [22. Schedule claims by priority with weighted-slot anti-starvation](0022-schedule-claims-by-priority-with-weighted-slot-anti-starvation.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 Workers run against the same queue table concurrently. Each must claim a

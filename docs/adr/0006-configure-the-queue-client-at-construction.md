@@ -6,6 +6,10 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [4. Wake workers with LISTEN/NOTIFY and a polling fallback](0004-wake-workers-with-listen-notify-and-a-polling-fallback.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 A shared queue library is dropped into projects with different database setups,

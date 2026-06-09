@@ -10,6 +10,8 @@ Amends [8. Isolate storage behind a backend trait](0008-isolate-storage-behind-a
 
 Amends [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
 
+Relates to [7. Provide a layered architecture with independently usable layers](0007-provide-a-layered-architecture-with-independently-usable-layers.md)
+
 ## Context
 
 Storage sits behind a backend trait (ADR 8), and the PostgreSQL adapter built on
@@ -65,4 +67,4 @@ The layered architecture (ADR 7) and the trait boundary (ADR 8) are unchanged:
 nothing above storage names a driver or a SQL type. What changes is the stated
 intent. The boundary exists for internal decoupling and testing, so the earlier
 notes in ADR 8 and ADR 24 that an alternative production backend could be added
-later no longer describe the project's direction.
+later no longer reflect the project's direction.

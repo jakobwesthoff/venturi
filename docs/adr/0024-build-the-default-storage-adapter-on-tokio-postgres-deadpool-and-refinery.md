@@ -8,6 +8,20 @@ Accepted
 
 Amended by [26. Keep PostgreSQL as the only backend and remove the postgres feature](0026-keep-postgresql-as-the-only-backend-and-remove-the-postgres-feature.md)
 
+Relates to [2. Identify jobs with ULIDs](0002-identify-jobs-with-ulids.md)
+
+Relates to [3. Claim jobs with `FOR UPDATE SKIP LOCKED`](0003-claim-jobs-with-for-update-skip-locked.md)
+
+Relates to [4. Wake workers with LISTEN/NOTIFY and a polling fallback](0004-wake-workers-with-listen-notify-and-a-polling-fallback.md)
+
+Relates to [6. Configure the queue client at construction](0006-configure-the-queue-client-at-construction.md)
+
+Relates to [8. Isolate storage behind a backend trait](0008-isolate-storage-behind-a-backend-trait.md)
+
+Relates to [20. Run a bounded-concurrency claim and dispatch loop](0020-run-a-bounded-concurrency-claim-and-dispatch-loop.md)
+
+Relates to [22. Schedule claims by priority with weighted-slot anti-starvation](0022-schedule-claims-by-priority-with-weighted-slot-anti-starvation.md)
+
 ## Context
 
 Storage sits behind a backend trait (ADR 8), so the concrete database technology
@@ -42,7 +56,7 @@ The default adapter is built on:
   always uses the same transport as the pool and listening needs no separate
   configuration.
 - **refinery** for migrations. Migrations are authored as ordinary SQL files,
-  each using a prefix placeholder (for example `{{prefix}}`) wherever a table name
+  each using a prefix token (for example `{{prefix}}`) wherever a table name
   appears. Because the tables carry a configurable prefix (ADR 6), the adapter
   reads each file, substitutes the configured prefix with a plain string replace,
   and runs the result through refinery's runner, with refinery's migration-history
@@ -68,7 +82,7 @@ pool, or a SQL type; that boundary is the backend trait (ADR 8).
 
 The adapter has full control of the claim and recovery SQL, which the queue's
 correctness depends on, and the dependency graph stays pure-Rust with no C to
-satisfy. Migrations stay reviewable SQL files parameterized only by a prefix placeholder,
+satisfy. Migrations stay reviewable SQL files parameterized only by a prefix token,
 and reuse a tested runner rather than a hand-rolled applier, while still
 supporting prefixed names and per-prefix history, so multiple queues coexist and
 migrate independently in one database. Because the stack lives behind the

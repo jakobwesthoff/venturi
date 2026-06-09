@@ -6,6 +6,14 @@ Date: 2026-06-07
 
 Accepted
 
+Relates to [3. Claim jobs with `FOR UPDATE SKIP LOCKED`](0003-claim-jobs-with-for-update-skip-locked.md)
+
+Relates to [9. Define tasks as a trait dispatched through a type-erased registry](0009-define-tasks-as-a-trait-dispatched-through-a-type-erased-registry.md)
+
+Relates to [17. Split the task abstraction into Task and Handler](0017-split-the-task-abstraction-into-task-and-handler.md)
+
+Relates to [24. Build the default storage adapter on tokio-postgres, deadpool, and refinery](0024-build-the-default-storage-adapter-on-tokio-postgres-deadpool-and-refinery.md)
+
 ## Context
 
 Jobs carry a priority (`Task::priority()`, ADR 9, ADR 17), and the claim orders by

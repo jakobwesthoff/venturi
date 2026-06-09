@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** removed the `postgres` cargo feature. venturi is a
+  PostgreSQL-backed queue, so the adapter is now always compiled; the feature
+  only ever gated the `postgres` module while its dependencies were unconditional,
+  making `--no-default-features` an unusable build rather than a slimmer one.
+  Consumers who listed `features = ["postgres"]` should drop it. The `Store`
+  trait is documented as an internal driver-decoupling and test-fake seam, not a
+  supported extension point for alternative production backends.
 - Builder and config setters now clamp degenerate inputs to a safe bound instead
   of letting them surface as a runtime misbehaviour, matching the existing
   `concurrency(0) -> 1` convention: `WorkerBuilder::lease` and the per-task

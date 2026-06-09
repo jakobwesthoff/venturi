@@ -25,7 +25,6 @@ pub mod store;
 pub mod task;
 pub mod worker;
 
-#[cfg(feature = "postgres")]
 pub mod postgres;
 
 #[cfg(test)]

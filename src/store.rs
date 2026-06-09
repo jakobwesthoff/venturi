@@ -310,13 +310,16 @@ pub enum Settlement {
 /// The storage backend contract.
 ///
 /// Implementors provide durable, concurrency-safe storage for the queue. The
-/// default implementation is [`crate::postgres::PostgresStore`]; tests use an
-/// in-memory fake. The trait is `async` (via `async_trait` for object safety) so
-/// a worker can hold an `Arc<dyn Store>`.
+/// trait is `async` (via `async_trait` for object safety) so a worker can hold an
+/// `Arc<dyn Store>`.
 ///
-/// Operations are added to this trait as the queue gains capabilities across the
-/// build phases. For now it covers schema setup; claiming, settlement, dedup,
-/// recovery, history, cleanup, and stats arrive with their respective phases.
+/// venturi is a PostgreSQL-backed queue: [`crate::postgres::PostgresStore`] is the
+/// only shipped and supported implementation. This trait exists to keep the upper
+/// layers (the queue handle, the worker loop, the registry) free of any direct
+/// driver dependency and to back the crate's in-memory test fake. It is not a
+/// supported extension point for alternative production backends; implementing it
+/// against another database is possible but unsupported, and operations are added
+/// to it as the queue gains capabilities without regard to external implementors.
 #[async_trait]
 pub trait Store: Send + Sync {
     /// Apply the schema migrations for this backend's configured table prefix.

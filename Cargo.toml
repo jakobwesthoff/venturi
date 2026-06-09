@@ -39,9 +39,6 @@ tracing = "0.1.44"
 ulid = { version = "1.2.1", features = ["serde"] }
 
 [features]
-default = ["postgres"]
-# The default PostgreSQL storage adapter (deadpool-postgres + refinery).
-postgres = []
 # Opt-in metric emission through the vendor-neutral `metrics` facade.
 metrics = ["dep:metrics"]
 # TLS construction via rustls (the `connect_rustls` constructor). Off by default

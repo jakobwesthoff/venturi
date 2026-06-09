@@ -20,11 +20,16 @@ telling workers apart.
 
 ## Notes
 
-- Correctness is unaffected: the ownership guard compares both host and pid,
-  and the pid disambiguates within a single host. This is purely a diagnostics
-  fidelity issue.
+- Correctness no longer depends on this string. The settlement ownership guard
+  now matches on the claim epoch (`run_count`), not on `claimed_by`, so two
+  workers colliding on `unknown:1` (the common minimal-container case) cannot
+  double-settle each other's claims. (Superseded the earlier note here, which
+  claimed the pid disambiguates the guard — that reasoning was wrong for
+  same-process reclaim and is now moot.) This is purely a diagnostics fidelity
+  issue: `claimed_by` is the only human-readable "who holds this" field.
 - Fix options: pull the `gethostname` crate, or read the platform hostname
   directly. Adding a dependency for a diagnostics-only string is the trade-off
   to weigh.
 
-Source: review finding, `src/worker/mod.rs:801-808`.
+Source: review finding, `src/worker/mod.rs:826-832`. Related: claim-epoch guard
+in `src/store.rs` `settle`/`extend_lease`.

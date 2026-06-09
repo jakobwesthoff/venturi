@@ -116,6 +116,19 @@ impl PostgresStore {
         PostgresStore::from_config(config, tls, prefix)
     }
 
+    /// Bound the work pool to at most `max_size` connections.
+    ///
+    /// Construction leaves the pool at `deadpool`'s default size. Chain this to
+    /// cap it — for example to divide a database's connection budget across
+    /// several stores sharing it. Only the work pool is affected; the dedicated
+    /// `LISTEN` connection is separate. The pool connects lazily, so this sets
+    /// the ceiling the pool grows to under load rather than opening anything now.
+    #[must_use]
+    pub fn with_max_pool_size(self, max_size: usize) -> Self {
+        self.pool.resize(max_size);
+        self
+    }
+
     /// The configured table-name prefix.
     pub fn prefix(&self) -> &str {
         &self.prefix
@@ -494,6 +507,9 @@ impl Store for PostgresStore {
         // Build the WHERE clause from whichever fields are set, binding each as a
         // positional parameter so nothing is interpolated into the SQL.
         let status = filter.status.map(|s| s.as_str());
+        // The cursor id is compared against the text `id` column, so render it to
+        // its ULID string here and keep it alive for the duration of the query.
+        let cursor_id = filter.created_before.as_ref().map(|(_, id)| id.to_string());
         let mut params: Vec<&(dyn ToSql + Sync)> = Vec::new();
         let mut clauses: Vec<String> = Vec::new();
 
@@ -513,6 +529,21 @@ impl Store for PostgresStore {
             params.push(until);
             clauses.push(format!("finished_at < ${}", params.len()));
         }
+        // Keyset bound: a row-value comparison against the same `(created_at, id)`
+        // the result is ordered by, so a page is every row strictly older than the
+        // cursor. `(a, b) < ($1, $2)` is true when `a < $1`, or `a = $1 AND b < $2`
+        // — exactly the descending-order successor condition, with `id` breaking
+        // ties on equal `created_at`.
+        if let Some((created_at, _)) = &filter.created_before {
+            params.push(created_at);
+            let ts_index = params.len();
+            let id = cursor_id
+                .as_ref()
+                .expect("cursor_id is Some whenever created_before is Some");
+            params.push(id);
+            let id_index = params.len();
+            clauses.push(format!("(created_at, id) < (${ts_index}, ${id_index})"));
+        }
 
         let where_clause = if clauses.is_empty() {
             String::new()
@@ -529,7 +560,7 @@ impl Store for PostgresStore {
 
         let sql = format!(
             "SELECT {columns} FROM {prefix}_jobs {where_clause} \
-             ORDER BY created_at DESC {limit_clause}",
+             ORDER BY created_at DESC, id DESC {limit_clause}",
             columns = JOB_COLUMNS,
             prefix = self.prefix,
         );
@@ -819,5 +850,42 @@ mod tests {
             finished_at: now,
             failure_count: 3,
         }));
+    }
+
+    // The DSN never connects in these tests: `connect` only parses it and builds
+    // the lazy pool, so the pool's configured `max_size` is observable offline.
+    const TEST_DSN: &str = "host=localhost user=postgres dbname=postgres";
+
+    #[test]
+    fn with_max_pool_size_sets_exactly_the_requested_cap() {
+        let store = PostgresStore::connect(TEST_DSN, "venturi")
+            .expect("construct store")
+            .with_max_pool_size(3);
+        assert_eq!(store.pool().status().max_size, 3);
+
+        // A second value confirms the cap tracks the argument, not a constant.
+        let store = PostgresStore::connect(TEST_DSN, "venturi")
+            .expect("construct store")
+            .with_max_pool_size(7);
+        assert_eq!(store.pool().status().max_size, 7);
+    }
+
+    #[test]
+    fn default_pool_size_is_unchanged_without_the_knob() {
+        let default = PostgresStore::connect(TEST_DSN, "venturi")
+            .expect("construct store")
+            .pool()
+            .status()
+            .max_size;
+        assert!(default > 0, "deadpool provides a positive default max size");
+
+        // The knob moves the cap; omitting it leaves the library default intact.
+        let capped = PostgresStore::connect(TEST_DSN, "venturi")
+            .expect("construct store")
+            .with_max_pool_size(default + 1);
+        assert_eq!(capped.pool().status().max_size, default + 1);
+
+        let untouched = PostgresStore::connect(TEST_DSN, "venturi").expect("construct store");
+        assert_eq!(untouched.pool().status().max_size, default);
     }
 }

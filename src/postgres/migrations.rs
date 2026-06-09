@@ -31,10 +31,16 @@ use tokio_postgres::error::Error as PgError;
 /// Each entry is `(refinery name, SQL with `{{prefix}}` tokens)`. The name must
 /// follow refinery's `V{version}__{description}` convention; the version drives
 /// ordering and the applied-history comparison. New versions are appended here.
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "V1__initial",
-    include_str!("../../migrations/V1__initial.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "V1__initial",
+        include_str!("../../migrations/V1__initial.sql"),
+    ),
+    (
+        "V2__history_cursor",
+        include_str!("../../migrations/V2__history_cursor.sql"),
+    ),
+];
 
 /// Apply all migrations for `prefix` against a borrowed client.
 ///

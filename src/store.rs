@@ -459,6 +459,13 @@ pub struct HistoryFilter {
     pub finished_since: Option<DateTime<Utc>>,
     /// Only jobs that reached a terminal state strictly before this time.
     pub finished_until: Option<DateTime<Utc>>,
+    /// Keyset cursor for stable pagination. Returns only jobs ordered strictly
+    /// after the given `(created_at, id)` under the query's `created_at DESC,
+    /// id DESC` order — that is, older than the cursor. `None` starts from the
+    /// most recent job. Paired with `limit`, this walks history in pages that
+    /// stay correct as rows are inserted or removed between requests, unlike an
+    /// offset.
+    pub created_before: Option<(DateTime<Utc>, Ulid)>,
     /// Cap the number of rows returned (most recently created first).
     pub limit: Option<i64>,
 }

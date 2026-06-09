@@ -26,6 +26,9 @@ struct Inner {
     jobs: HashMap<Ulid, JobRecord>,
     journal: Vec<JournalRecord>,
     next_journal_id: i64,
+    // Test seam: when set, the next `merge_into` reports the candidate as no
+    // longer mergeable, reproducing the dedup race window deterministically.
+    force_next_merge_into_miss: bool,
 }
 
 /// A shareable in-memory store. Cloning shares the same underlying state.
@@ -48,6 +51,17 @@ impl FakeStore {
             .jobs
             .get(&id)
             .cloned()
+    }
+
+    /// Force the next `merge_into` to report the candidate as no longer
+    /// mergeable (`Ok(false)`), simulating the candidate being claimed in the
+    /// race window between `dedup_candidate` and `merge_into`. One-shot: it
+    /// clears itself after the next `merge_into`.
+    pub(crate) fn force_next_merge_into_miss(&self) {
+        self.inner
+            .lock()
+            .expect("lock not poisoned")
+            .force_next_merge_into_miss = true;
     }
 
     /// Count jobs currently in a given lifecycle state.
@@ -438,6 +452,9 @@ impl Store for FakeStore {
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         let mut guard = self.inner.lock().expect("lock not poisoned");
+        if std::mem::take(&mut guard.force_next_merge_into_miss) {
+            return Ok(false);
+        }
         let Some(job) = guard.jobs.get_mut(&id) else {
             return Ok(false);
         };

@@ -193,6 +193,11 @@ impl Queue {
     /// journal entry. If the candidate is no longer pending (it was claimed in the
     /// meantime), fall back to a fresh enqueue of the incoming task so no work is
     /// lost.
+    ///
+    /// The fallback is a brand-new job: it does not inherit the now-claimed
+    /// candidate's `run_count`, `failure_count`, or carry. A `Merge::With` that
+    /// intended to continue the in-flight work therefore starts from `Default`
+    /// carry rather than the candidate's accumulated state.
     async fn apply_merge<T: Task>(
         &self,
         candidate: &crate::store::JobRecord,
@@ -242,5 +247,71 @@ impl Queue {
         self.store.enqueue(&job).await?;
         crate::observability::enqueued(T::KIND);
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Status;
+    use crate::task::{DedupKey, Merge, Pending};
+    use crate::test_support::FakeStore;
+    use serde::{Deserialize, Serialize};
+
+    /// A dedup task that, on collision, continues the in-flight work via
+    /// `Merge::With` carrying a non-default value.
+    #[derive(Serialize, Deserialize)]
+    struct Accumulate {
+        amount: u64,
+    }
+
+    impl Task for Accumulate {
+        const KIND: &'static str = "accumulate";
+        type Carry = u64;
+
+        fn dedup_key(&self) -> Option<DedupKey> {
+            Some(DedupKey::from("acc"))
+        }
+
+        fn merge(&self, _existing: &Pending<Self>) -> Merge<Self> {
+            Merge::With {
+                task: Accumulate {
+                    amount: self.amount,
+                },
+                carry: 999,
+            }
+        }
+    }
+
+    /// When the dedup candidate is claimed in the window between the candidate
+    /// read and the merge, `apply_merge` falls back to a fresh enqueue rather than
+    /// losing the work or erroring — and the fresh job starts from default carry,
+    /// not the candidate's accumulated state.
+    #[tokio::test]
+    async fn merge_fallback_inserts_a_fresh_job_when_the_candidate_was_claimed() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+
+        let first = queue
+            .enqueue(Accumulate { amount: 1 })
+            .await
+            .expect("first enqueue");
+
+        // Reproduce the race: the merge misses as if the candidate had just been claimed.
+        store.force_next_merge_into_miss();
+        let second = queue
+            .enqueue(Accumulate { amount: 5 })
+            .await
+            .expect("second enqueue");
+
+        assert_ne!(first, second, "the fallback inserts a fresh job, not the candidate");
+        assert_eq!(store.count(Status::Pending), 2, "no work is lost");
+
+        let fresh = store.job(second).expect("fresh job exists");
+        assert_eq!(
+            fresh.carry,
+            serde_json::json!(0),
+            "the fallback job starts from default carry, not the merge's 999"
+        );
     }
 }

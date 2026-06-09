@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `Store::enqueue` now rejects a `NewJob` whose `priority` is outside the
+  supported `0..=2` tier range with a new `Error::InvalidPriority`, in both the
+  PostgreSQL and in-memory adapters. Direct `Store` users who hand-build a
+  `NewJob` get a typed error at the boundary instead of a backend-specific
+  `CHECK`-constraint violation; the typed `Queue` path always passes a valid
+  tier and is unaffected.
+
 ### Changed
 
 - **Breaking:** `TaskError::source` is renamed to `TaskError::cause`. The old

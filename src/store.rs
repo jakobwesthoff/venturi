@@ -221,6 +221,21 @@ pub struct NewJob {
     pub dedup_key: Option<String>,
 }
 
+impl NewJob {
+    /// Reject a job whose priority is outside the supported tier range before it
+    /// reaches storage. Adapters call this at the start of `enqueue` so a direct
+    /// `Store` user who hand-builds a `NewJob` gets a typed [`Error`] rather than
+    /// a backend-specific constraint violation (the PostgreSQL schema's `CHECK`).
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if crate::task::Priority::from_smallint(self.priority).is_none() {
+            return Err(Error::InvalidPriority {
+                priority: self.priority,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// A journal entry to append as part of settling a job.
 ///
 /// Exactly one entry is written per execution (and, later, per applied merge), in
@@ -546,5 +561,41 @@ pub(crate) struct NeverNotifier;
 impl Notifier for NeverNotifier {
     async fn recv(&mut self) {
         std::future::pending::<()>().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job_with_priority(priority: i16) -> NewJob {
+        let now = Utc::now();
+        NewJob {
+            id: Ulid::new(),
+            kind: "demo".to_owned(),
+            payload: serde_json::Value::Null,
+            priority,
+            created_at: now,
+            visible_at: now,
+            carry: serde_json::Value::Null,
+            dedup_key: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_every_supported_tier() {
+        for tier in 0..=2 {
+            assert!(job_with_priority(tier).validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_priority() {
+        for tier in [-1, 3, i16::MAX] {
+            match job_with_priority(tier).validate() {
+                Err(Error::InvalidPriority { priority }) => assert_eq!(priority, tier),
+                other => panic!("expected InvalidPriority for {tier}, got {other:?}"),
+            }
+        }
     }
 }

@@ -42,6 +42,15 @@ pub enum Error {
     /// A configuration value was invalid (for example an empty table prefix).
     #[error("invalid configuration: {0}")]
     Config(String),
+
+    /// A job was enqueued with a priority tier outside the supported `0..=2`
+    /// range. The typed [`crate::Queue`] path cannot produce this; it guards
+    /// direct [`crate::Store`] users who build a `NewJob` by hand.
+    #[error("invalid priority tier {priority}: expected 0 (high), 1 (normal), or 2 (low)")]
+    InvalidPriority {
+        /// The out-of-range tier that was supplied.
+        priority: i16,
+    },
 }
 
 #[cfg(test)]

@@ -207,6 +207,7 @@ impl Store for PostgresStore {
     }
 
     async fn enqueue(&self, job: &NewJob) -> Result<(), Error> {
+        job.validate()?;
         let sql = format!(
             "INSERT INTO {prefix}_jobs \
              (id, kind, payload, priority, status, created_at, visible_at, \

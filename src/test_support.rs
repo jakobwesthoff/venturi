@@ -69,6 +69,7 @@ impl Store for FakeStore {
     }
 
     async fn enqueue(&self, job: &NewJob) -> Result<(), Error> {
+        job.validate()?;
         let record = JobRecord {
             id: job.id,
             kind: job.kind.clone(),

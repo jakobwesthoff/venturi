@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Trimmed the crate's `tokio` dependency from `features = ["full"]` to the set
+  the library actually uses (`rt`, `sync`, `time`, `macros`), and dropped the
+  unused direct `refinery` dependency (only `refinery-core` is used). Consumers
+  that relied on venturi transitively enabling other `tokio` features should
+  declare those features on their own `tokio` dependency. No API change.
 - **Breaking:** run numbers are `u32` across the public surface. `JobRecord::run_count`,
   `JournalRecord::run_no`, `JournalAppend::run_no`, and the `run_no` argument of
   `Store::settle`/`Store::recover`/`Store::extend_lease` change from `i32` to

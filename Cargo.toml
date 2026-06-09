@@ -18,18 +18,17 @@ futures-util = { version = "0.3.32", default-features = false, features = [
     "std",
 ] }
 metrics = { version = "0.24.6", optional = true }
-# `refinery`/`refinery-core` are pulled with default features off on purpose:
-# the `tokio-postgres` feature would force `native-tls`/`postgres-native-tls`
-# into the tree. We instead drive the runner by implementing refinery's async
+# `refinery-core` is pulled with default features off on purpose: the
+# `tokio-postgres` feature would force `native-tls`/`postgres-native-tls` into
+# the tree. We instead drive the runner by implementing refinery's async
 # migration traits over a `tokio_postgres::Client` ourselves (postgres module).
-refinery = { version = "0.9.1", default-features = false }
 refinery-core = { version = "0.9.1", default-features = false }
 rustls = { version = "0.23.40", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["parsing", "formatting"] }
-tokio = { version = "1.52.3", features = ["full"] }
+tokio = { version = "1.52.3", features = ["rt", "sync", "time", "macros"] }
 tokio-postgres = { version = "0.7.17", features = [
     "with-chrono-0_4",
     "with-serde_json-1",
@@ -52,6 +51,9 @@ rustls = ["dep:rustls", "dep:tokio-postgres-rustls"]
 
 [dev-dependencies]
 futures = "0.3.32"
+# Test/example-only tokio features on top of the lean set the library declares:
+# `rt-multi-thread`/`signal` for the `examples/worker.rs` `#[tokio::main]` + Ctrl-C.
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "signal"] }
 metrics-util = { version = "0.20.4", features = ["debugging"] }
 proptest = "1.11.0"
 testcontainers = "0.27.3"

@@ -1917,16 +1917,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "refinery"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee5133e5b207e5703c2a4a9dc9bd8c8f2cc74c4ac04ca5510acaa907012c77ac"
-dependencies = [
- "refinery-core",
- "refinery-macros",
-]
-
-[[package]]
 name = "refinery-core"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1941,19 +1931,6 @@ dependencies = [
  "time",
  "url",
  "walkdir",
-]
-
-[[package]]
-name = "refinery-macros"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c56c2e960c8e47c7c5c30ad334afea8b5502da796a59e34d640d6239d876d924"
-dependencies = [
- "proc-macro2",
- "quote",
- "refinery-core",
- "regex",
- "syn",
 ]
 
 [[package]]
@@ -2594,7 +2571,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -2953,7 +2929,6 @@ dependencies = [
  "metrics",
  "metrics-util",
  "proptest",
- "refinery",
  "refinery-core",
  "rustls",
  "serde",

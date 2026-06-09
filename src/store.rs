@@ -167,7 +167,7 @@ pub struct JobRecord {
     /// When the job reached a terminal state; `None` until then.
     pub finished_at: Option<DateTime<Utc>>,
     /// Number of times the job has been claimed/executed.
-    pub run_count: i32,
+    pub run_count: u32,
     /// Number of failed executions counted toward the backstop.
     pub failure_count: i32,
     /// The typed carried state, serialized; JSON `null` when empty.
@@ -186,7 +186,7 @@ pub struct JournalRecord {
     /// The job's kind, denormalized so the journal is queryable without a join.
     pub kind: String,
     /// The run number this entry records.
-    pub run_no: i32,
+    pub run_no: u32,
     /// When the entry was written.
     pub recorded_at: DateTime<Utc>,
     /// The recorded outcome.
@@ -246,7 +246,7 @@ pub struct JournalAppend {
     /// The job's kind, denormalized so the journal is queryable without a join.
     pub kind: String,
     /// The run number this entry records.
-    pub run_no: i32,
+    pub run_no: u32,
     /// When the entry is written.
     pub recorded_at: DateTime<Utc>,
     /// The recorded outcome.
@@ -362,7 +362,7 @@ pub trait Store: Send + Sync {
         &self,
         id: Ulid,
         claimed_by: &str,
-        run_no: i32,
+        run_no: u32,
         settlement: Settlement,
         journal: JournalAppend,
     ) -> Result<bool, Error>;
@@ -422,7 +422,7 @@ pub trait Store: Send + Sync {
         id: Ulid,
         visible_at: DateTime<Utc>,
         failure_count: i32,
-        run_no: i32,
+        run_no: u32,
         journal: JournalAppend,
     ) -> Result<bool, Error>;
 
@@ -437,7 +437,7 @@ pub trait Store: Send + Sync {
         &self,
         id: Ulid,
         claimed_by: &str,
-        run_no: i32,
+        run_no: u32,
         lease: Duration,
     ) -> Result<bool, Error>;
 

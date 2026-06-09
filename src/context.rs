@@ -32,7 +32,7 @@ impl JournalEntry {
     /// Project a stored journal record into the read-only view a handler sees.
     pub(crate) fn from_record(record: crate::store::JournalRecord) -> JournalEntry {
         JournalEntry {
-            run_no: record.run_no.max(0) as u32,
+            run_no: record.run_no,
             recorded_at: record.recorded_at,
             outcome: record.outcome,
             note: record.note,

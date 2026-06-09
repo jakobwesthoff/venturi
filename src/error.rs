@@ -51,6 +51,17 @@ pub enum Error {
         /// The out-of-range tier that was supplied.
         priority: i16,
     },
+
+    /// A run number exceeded the signed `integer` range the storage column holds.
+    /// Run numbers originate from the database and only increment, so this cannot
+    /// arise on the normal path; it guards the storage boundary against a
+    /// hand-built run number above `i32::MAX` rather than letting it wrap to a
+    /// negative on the way to the database.
+    #[error("run number {run_no} exceeds the storable range")]
+    RunNumberOutOfRange {
+        /// The run number that did not fit the storage column.
+        run_no: u32,
+    },
 }
 
 #[cfg(test)]

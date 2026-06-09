@@ -586,7 +586,7 @@ where
         let input = RunInput {
             payload: job.payload,
             carry: job.carry,
-            run_count: job.run_count.max(0) as u32,
+            run_count: job.run_count,
             history,
             state: Arc::clone(&self.state),
             cancel: shutdown.clone(),
@@ -776,7 +776,7 @@ where
 struct FinishedRun {
     id: Ulid,
     kind: String,
-    run_no: i32,
+    run_no: u32,
     failure_count: i32,
     report: Result<RunReport, Error>,
 }
@@ -786,7 +786,7 @@ struct FinishedRun {
 struct InflightJob {
     id: Ulid,
     kind: String,
-    run_no: i32,
+    run_no: u32,
 }
 
 /// The journal outcome that corresponds to a settlement transition.
@@ -1040,7 +1040,7 @@ mod tests {
         let id = queue.enqueue(SlowJob).await.expect("enqueue");
         let kinds = vec!["slow".to_owned()];
 
-        let make_journal = |run_no: i32, outcome: JournalOutcome| JournalAppend {
+        let make_journal = |run_no: u32, outcome: JournalOutcome| JournalAppend {
             kind: "slow".to_owned(),
             run_no,
             recorded_at: Utc::now(),
@@ -1125,7 +1125,7 @@ mod tests {
         let id = queue.enqueue(SlowJob).await.expect("enqueue");
         let kinds = vec!["slow".to_owned()];
 
-        let make_journal = |run_no: i32| JournalAppend {
+        let make_journal = |run_no: u32| JournalAppend {
             kind: "slow".to_owned(),
             run_no,
             recorded_at: Utc::now(),

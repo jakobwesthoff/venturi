@@ -86,7 +86,7 @@ fn new_job(id: Ulid) -> NewJob {
     }
 }
 
-fn journal(run_no: i32, outcome: JournalOutcome) -> JournalAppend {
+fn journal(run_no: u32, outcome: JournalOutcome) -> JournalAppend {
     JournalAppend {
         kind: KIND.to_owned(),
         run_no,
@@ -103,7 +103,7 @@ async fn enqueue_and_claim(
     store: &impl Store,
     rx: &mut UnboundedReceiver<()>,
     lease: Duration,
-) -> (Ulid, i32) {
+) -> (Ulid, u32) {
     let id = Ulid::new();
     store.enqueue(&new_job(id)).await.expect("enqueue");
     let kinds = vec![KIND.to_owned()];
@@ -285,7 +285,7 @@ async fn recover_notifies() {
         .recover(
             id,
             Utc::now(),
-            run_no + 1,
+            (run_no + 1) as i32,
             run_no,
             journal(run_no, JournalOutcome::StaleRecovered),
         )

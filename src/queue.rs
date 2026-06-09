@@ -141,7 +141,7 @@ impl Queue {
         let pending = Pending::new(
             existing_payload,
             existing_carry,
-            candidate.run_count.max(0) as u32,
+            candidate.run_count,
             journal,
         );
 
@@ -204,7 +204,7 @@ impl Queue {
     ) -> Result<Ulid, Error> {
         let journal = JournalAppend {
             kind: candidate.kind.clone(),
-            run_no: candidate.run_count.max(0),
+            run_no: candidate.run_count,
             recorded_at: Utc::now(),
             outcome: JournalOutcome::Merged,
             note: Some("enqueue merged into pending job".to_owned()),

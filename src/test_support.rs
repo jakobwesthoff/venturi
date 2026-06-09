@@ -139,7 +139,7 @@ impl Store for FakeStore {
         &self,
         id: Ulid,
         claimed_by: &str,
-        run_no: i32,
+        run_no: u32,
         settlement: Settlement,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
@@ -351,7 +351,7 @@ impl Store for FakeStore {
         id: Ulid,
         visible_at: DateTime<Utc>,
         failure_count: i32,
-        run_no: i32,
+        run_no: u32,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         let now = Utc::now();
@@ -394,7 +394,7 @@ impl Store for FakeStore {
         &self,
         id: Ulid,
         claimed_by: &str,
-        run_no: i32,
+        run_no: u32,
         lease: Duration,
     ) -> Result<bool, Error> {
         let now = Utc::now();

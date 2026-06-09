@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** run numbers are `u32` across the public surface. `JobRecord::run_count`,
+  `JournalRecord::run_no`, `JournalAppend::run_no`, and the `run_no` argument of
+  `Store::settle`/`Store::recover`/`Store::extend_lease` change from `i32` to
+  `u32`, matching the already-`u32` handler-facing `Context::run_count` and
+  `JournalEntry::run_no`. The signedness is now confined to the PostgreSQL
+  adapter, which converts to the DB's signed `integer` column at the SQL
+  boundary; a run number above `i32::MAX` there surfaces as the new
+  `Error::RunNumberOutOfRange` rather than wrapping to a negative. Custom `Store`
+  implementations and code reading these fields must adjust the type.
 - **Breaking:** `TaskError::source` is renamed to `TaskError::cause`. The old
   name shadowed [`std::error::Error::source`] even though `TaskError` does not
   implement that trait, so a caller could invoke it expecting trait-based

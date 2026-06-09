@@ -169,6 +169,17 @@ fn notifies_on_repend(settlement: &Settlement) -> bool {
     }
 }
 
+/// Convert a `u32` run number to the signed `integer` the DB column stores.
+///
+/// Run numbers originate as DB `integer`s and only ever increment in SQL, so a
+/// value above `i32::MAX` cannot arise on this adapter's own path. The checked
+/// conversion turns that otherwise-impossible case into an explicit error rather
+/// than a silently wrapped negative epoch, which would corrupt the ownership
+/// guard and the journal.
+fn run_no_to_db(run_no: u32) -> Result<i32, Error> {
+    i32::try_from(run_no).map_err(|_| Error::RunNumberOutOfRange { run_no })
+}
+
 #[async_trait]
 impl Store for PostgresStore {
     async fn migrate(&self) -> Result<(), Error> {
@@ -285,7 +296,7 @@ impl Store for PostgresStore {
         &self,
         id: Ulid,
         claimed_by: &str,
-        run_no: i32,
+        run_no: u32,
         settlement: Settlement,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
@@ -296,6 +307,9 @@ impl Store for PostgresStore {
         // journal never records a settlement that did not apply.
         let guard = "WHERE id = $1 AND claimed_by = $2 AND run_count = $3 AND status = 'claimed'";
         let id = id.to_string();
+        // The DB stores run numbers in a signed `integer` column.
+        let run_no = run_no_to_db(run_no)?;
+        let stored_entry_run_no = run_no_to_db(journal.run_no)?;
         // Classify before the match below consumes `settlement`.
         let repends = notifies_on_repend(&settlement);
 
@@ -384,7 +398,7 @@ impl Store for PostgresStore {
                 &[
                     &id,
                     &journal.kind,
-                    &journal.run_no,
+                    &stored_entry_run_no,
                     &journal.recorded_at,
                     &journal.outcome.as_str(),
                     &journal.note,
@@ -452,10 +466,13 @@ impl Store for PostgresStore {
         id: Ulid,
         visible_at: DateTime<Utc>,
         failure_count: i32,
-        run_no: i32,
+        run_no: u32,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         let id = id.to_string();
+        // The DB stores run numbers in a signed `integer` column.
+        let run_no = run_no_to_db(run_no)?;
+        let stored_entry_run_no = run_no_to_db(journal.run_no)?;
         let mut conn = self.pool.get().await?;
         let tx = conn.transaction().await?;
 
@@ -485,7 +502,7 @@ impl Store for PostgresStore {
                 &[
                     &id,
                     &journal.kind,
-                    &journal.run_no,
+                    &stored_entry_run_no,
                     &journal.recorded_at,
                     &journal.outcome.as_str(),
                     &journal.note,
@@ -509,9 +526,11 @@ impl Store for PostgresStore {
         &self,
         id: Ulid,
         claimed_by: &str,
-        run_no: i32,
+        run_no: u32,
         lease: Duration,
     ) -> Result<bool, Error> {
+        // The DB stores run numbers in a signed `integer` column.
+        let run_no = run_no_to_db(run_no)?;
         let sql = format!(
             "UPDATE {prefix}_jobs SET claim_expires_at = now() + interval '1 second' * $4 \
              WHERE id = $1 AND claimed_by = $2 AND run_count = $3 AND status = 'claimed'",
@@ -700,6 +719,8 @@ impl Store for PostgresStore {
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         let id = id.to_string();
+        // The DB stores run numbers in a signed `integer` column.
+        let stored_entry_run_no = run_no_to_db(journal.run_no)?;
         let mut conn = self.pool.get().await?;
         let tx = conn.transaction().await?;
 
@@ -743,7 +764,7 @@ impl Store for PostgresStore {
                 &[
                     &id,
                     &journal.kind,
-                    &journal.run_no,
+                    &stored_entry_run_no,
                     &journal.recorded_at,
                     &journal.outcome.as_str(),
                     &journal.note,

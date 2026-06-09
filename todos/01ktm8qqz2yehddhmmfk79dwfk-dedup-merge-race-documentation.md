@@ -1,5 +1,16 @@
 # Concurrent enqueues of one dedup key can both apply a merge
 
+## Decision (accepted for now)
+
+Last-writer-wins under concurrent same-key enqueue is **accepted** and now
+documented as the contract on `Task::merge` (and a code comment in
+`Queue::submit`). No serialization is added. Revisit only if a concrete use case
+needs exactly-one-merge semantics — at which point weigh whether we are ready to
+accept the downsides of the `SELECT ... FOR UPDATE` option below (holding a
+transaction across the user's `merge` callback and added lock contention on the
+enqueue hot path), or design a better approach. The carry-reset documentation
+note (below) is still worth doing.
+
 ## Problem
 
 `dedup_candidate()` and `merge_into()` are not performed atomically

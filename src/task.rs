@@ -224,6 +224,17 @@ pub trait Task: Serialize + DeserializeOwned + Send + Sync + 'static + Sized {
     /// Decide what happens when a pending job with the same `(KIND, dedup_key)`
     /// already exists. Called only on a collision; the default replaces the
     /// existing payload.
+    ///
+    /// Concurrency: the candidate is read, this decision is computed, and the
+    /// result is written as three separate store calls, not one atomic
+    /// transaction. Two enqueues of the same `(KIND, dedup_key)` racing each other
+    /// can both observe the same candidate and both apply their merge, so the
+    /// outcome is last-writer-wins: with [`Merge::Replace`] the later write
+    /// supersedes the earlier, and with [`Merge::With`] one contribution can be
+    /// lost because both merges started from the same base. Coalescing under
+    /// non-concurrent or lightly contended enqueue is exact. If you need
+    /// exactly-one-merge semantics under heavy same-key contention, serialize those
+    /// enqueues yourself.
     fn merge(&self, existing: &Pending<Self>) -> Merge<Self> {
         let _ = existing;
         Merge::Replace

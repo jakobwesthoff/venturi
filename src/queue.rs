@@ -102,6 +102,10 @@ impl Queue {
         };
         let key = dedup_key.into_string();
 
+        // Dedup is a read-modify-write across three store calls (read the
+        // candidate, compute the merge below, write it via `apply_merge`), not one
+        // transaction. Concurrent enqueues of the same key therefore resolve
+        // last-writer-wins; see `Task::merge` for the contract.
         let Some(candidate) = self.store.dedup_candidate(T::KIND, &key).await? else {
             return self.insert(&task, created_at, visible_at, Some(key)).await;
         };

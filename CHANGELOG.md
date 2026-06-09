@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Documented that deduplication merges are last-writer-wins under concurrent
+  enqueue of the same `(KIND, dedup_key)`: the candidate read, `Task::merge`
+  decision, and write are not one transaction, so racing enqueues can both merge
+  (with `Merge::With`, one contribution can be lost). No behavior change; the
+  contract is now stated on `Task::merge`.
+
 ### Fixed
 
 - A run that completes successfully but whose carry cannot be serialized to JSON

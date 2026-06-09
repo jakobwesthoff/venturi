@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `Queue::job(id)` (and the underlying `Store::job`) fetches a single job by id,
+  returning the full `JobRecord` including its `payload` and `carry`, or `None`
+  when no such job exists. This is a primary-key point lookup for detail
+  inspection, distinct from the filtered, paginated `Queue::jobs` history scan.
+
+### Changed
+
+- **Breaking:** `Store` gains a required `job` method. Custom `Store`
+  implementations must add it; the bundled PostgreSQL adapter already does.
+
 ### Fixed
 
 - The settlement ownership guard now matches the claim epoch (`run_count`) in

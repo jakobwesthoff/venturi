@@ -262,6 +262,16 @@ impl Store for FakeStore {
         Ok(jobs)
     }
 
+    async fn job(&self, id: Ulid) -> Result<Option<JobRecord>, Error> {
+        Ok(self
+            .inner
+            .lock()
+            .expect("lock not poisoned")
+            .jobs
+            .get(&id)
+            .cloned())
+    }
+
     async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error> {
         let mut guard = self.inner.lock().expect("lock not poisoned");
         let to_remove: Vec<Ulid> = guard

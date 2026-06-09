@@ -421,6 +421,13 @@ pub trait Store: Send + Sync {
     /// Query jobs by the history filter, newest first.
     async fn query_jobs(&self, filter: &HistoryFilter) -> Result<Vec<JobRecord>, Error>;
 
+    /// Fetch a single job by id, or `None` if no such job exists.
+    ///
+    /// This reads one full job row, including its `payload` and `carry`, for
+    /// detail inspection — a point lookup on the primary key rather than the
+    /// filtered, paginated scan [`query_jobs`](Store::query_jobs) performs.
+    async fn job(&self, id: Ulid) -> Result<Option<JobRecord>, Error>;
+
     /// Bulk-delete terminal jobs matching the criteria, cascading to the journal.
     /// Returns the number of jobs deleted.
     async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error>;

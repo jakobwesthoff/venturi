@@ -581,6 +581,17 @@ impl Store for PostgresStore {
         rows.iter().map(job_from_row).collect()
     }
 
+    async fn job(&self, id: Ulid) -> Result<Option<JobRecord>, Error> {
+        let sql = format!(
+            "SELECT {columns} FROM {prefix}_jobs WHERE id = $1",
+            columns = JOB_COLUMNS,
+            prefix = self.prefix,
+        );
+        let conn = self.pool.get().await?;
+        let row = conn.query_opt(&sql, &[&id.to_string()]).await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
     async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error> {
         // `finished_at < $1` already restricts to terminal jobs, since only
         // completed/dead rows have it set.

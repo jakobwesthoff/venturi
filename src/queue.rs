@@ -62,6 +62,15 @@ impl Queue {
         self.store.query_jobs(filter).await
     }
 
+    /// Fetch a single job by id, including its `payload` and `carry`, or `None`
+    /// if no such job exists.
+    ///
+    /// A primary-key point lookup for detail inspection, distinct from
+    /// [`jobs`](Queue::jobs), which scans a filtered, paginated history page.
+    pub async fn job(&self, id: Ulid) -> Result<Option<JobRecord>, Error> {
+        self.store.job(id).await
+    }
+
     /// Fetch a single job's journal timeline in chronological order.
     pub async fn job_journal(&self, id: Ulid) -> Result<Vec<JournalRecord>, Error> {
         self.store.journal(id).await

@@ -33,6 +33,17 @@ impl Task for Beta {
     type Carry = ();
 }
 
+// A task that carries payload data, so the by-id lookup can be checked to return
+// the stored payload rather than a unit struct's `null`.
+#[derive(Serialize, Deserialize)]
+struct Detailed {
+    label: String,
+}
+impl Task for Detailed {
+    const KIND: &'static str = "detailed";
+    type Carry = ();
+}
+
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn history_query_filters_by_kind_and_status() {
@@ -93,6 +104,26 @@ async fn history_query_filters_by_kind_and_status() {
     // The completed alpha's journal timeline is reachable.
     let journal = queue.job_journal(alpha1).await.expect("journal");
     assert!(!journal.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn job_by_id_returns_the_full_record_or_none() {
+    let db = TestDb::start().await;
+    let store = Arc::new(db.store("venturi").await);
+    let queue = Queue::new(store.clone());
+
+    let id = queue.enqueue(Detailed { label: "render".into() }).await.expect("enqueue");
+
+    let record = queue.job(id).await.expect("lookup").expect("job exists");
+    assert_eq!(record.id, id);
+    assert_eq!(record.kind, "detailed");
+    // The point lookup carries the payload the filtered history scan also returns.
+    assert_eq!(record.payload, serde_json::json!({ "label": "render" }));
+
+    // An id that was never enqueued resolves to `None`, not an error.
+    let missing = queue.job(ulid::Ulid::new()).await.expect("lookup");
+    assert!(missing.is_none());
 }
 
 #[tokio::test]

@@ -40,6 +40,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "V2__history_cursor",
         include_str!("../../migrations/V2__history_cursor.sql"),
     ),
+    (
+        "V3__index_tuning",
+        include_str!("../../migrations/V3__index_tuning.sql"),
+    ),
 ];
 
 /// Apply all migrations for `prefix` against a borrowed client.

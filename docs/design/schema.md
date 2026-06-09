@@ -99,12 +99,21 @@ CREATE TABLE {{prefix}}_journal (
 
 ## Indexes
 
-Each index realizes an access path from `docs/design/indexes.md`.
+Each index realizes an access path from `docs/design/indexes.md`. The DDL below
+is the schema's **effective shape through migration V3**; the files under
+`migrations/` are the source of truth and evolve the schema by appending new
+versions (an applied migration's body is immutable, so a tuning change is a
+`DROP`/`CREATE` in a later version rather than an edit to an earlier one).
 
 ```sql
 -- #1 Claim path: highest-priority oldest eligible row per kind (ADR 3, 20, 22).
+-- Two complementary partial indexes; the planner picks per query. `visible_at` is
+-- a trailing key column (V3), filtered in-index without a heap fetch.
 CREATE INDEX {{prefix}}_jobs_claim
-    ON {{prefix}}_jobs (kind, priority, created_at)
+    ON {{prefix}}_jobs (kind, priority, created_at, visible_at)
+    WHERE status = 'pending';
+CREATE INDEX {{prefix}}_jobs_claim_priority
+    ON {{prefix}}_jobs (priority, created_at, visible_at)
     WHERE status = 'pending';
 
 -- #2 Soonest future eligibility, for the worker's wait timeout (ADR 20).
@@ -112,9 +121,10 @@ CREATE INDEX {{prefix}}_jobs_visible
     ON {{prefix}}_jobs (kind, visible_at)
     WHERE status = 'pending';
 
--- #3 Deduplication candidacy lookup (ADR 10). Non-unique (see note).
+-- #3 Deduplication candidacy lookup (ADR 10). Non-unique (see note). Trailing
+-- `created_at` (V3) returns the oldest pending sibling without a sort.
 CREATE INDEX {{prefix}}_jobs_dedup
-    ON {{prefix}}_jobs (kind, dedup_key)
+    ON {{prefix}}_jobs (kind, dedup_key, created_at)
     WHERE dedup_key IS NOT NULL AND status = 'pending';
 
 -- #4 Stale-claim recovery: expired leases (ADR 19).
@@ -122,32 +132,38 @@ CREATE INDEX {{prefix}}_jobs_lease
     ON {{prefix}}_jobs (claim_expires_at)
     WHERE status = 'claimed';
 
--- #5/#6 History listing and terminal-job cleanup (ADR 5, ADR 18).
+-- #5 History listing and status-filtered cleanup (ADR 5, ADR 18).
 CREATE INDEX {{prefix}}_jobs_history
     ON {{prefix}}_jobs (status, kind, finished_at);
 
--- #7 Journal per-job timeline and the FK cascade (ADR 16, ADR 18).
-CREATE INDEX {{prefix}}_journal_job
-    ON {{prefix}}_journal (job_id);
+-- #6 Status-less terminal-job cleanup (V3): partial on terminal rows.
+CREATE INDEX {{prefix}}_jobs_finished
+    ON {{prefix}}_jobs (finished_at)
+    WHERE finished_at IS NOT NULL;
 
--- #8 Journal global queries by kind over time (ADR 16, ADR 18).
-CREATE INDEX {{prefix}}_journal_kind
-    ON {{prefix}}_journal (kind, recorded_at);
+-- History keyset pagination (V2): `created_at DESC, id DESC` backward scan.
+CREATE INDEX {{prefix}}_jobs_created
+    ON {{prefix}}_jobs (created_at, id);
+
+-- #7 Journal per-job timeline and the FK cascade (ADR 16, ADR 18). Trailing `id`
+-- (V3) returns the timeline in order without a sort.
+CREATE INDEX {{prefix}}_journal_job
+    ON {{prefix}}_journal (job_id, id);
 ```
 
 Notes on specific indexes:
 
-- **`_jobs_claim` and the `visible_at` predicate.** The index is partial on
-  `status = 'pending'` and ordered `(kind, priority, created_at)`, which serves the
-  claim's kind membership and its `ORDER BY priority, created_at` per kind; with
-  `LIMIT 1 FOR UPDATE SKIP LOCKED` the planner takes the highest-priority oldest
-  eligible row. The `visible_at <= now()` eligibility test is applied as a residual
-  filter rather than carried in the index, because a btree cannot both range-filter
-  `visible_at` and preserve the `(priority, created_at)` ordering. This is
-  acceptable because not-yet-visible pending rows are normally a small minority:
-  most pending work is immediately visible, and delayed, backoff, paused, or
-  scheduled rows are the exception and become visible soon. A deployment that
-  accumulates many far-future rows would scan past more of them here.
+- **`_jobs_claim` / `_jobs_claim_priority` and the `visible_at` predicate.** Both
+  are partial on `status = 'pending'` and lead with the claim's `ORDER BY priority,
+  created_at`; with `LIMIT 1 FOR UPDATE SKIP LOCKED` the planner takes the
+  highest-priority oldest eligible row. `visible_at` is the trailing key column, so
+  `visible_at <= now()` is evaluated in-index as a non-boundary scan key (an
+  `Index Cond`, not a heap `Filter`): future-visible rows — which keep their
+  original `created_at` and so cluster at the front of the claim order — are skipped
+  without a heap fetch, while the `(priority, created_at)` prefix still drives the
+  ordered, pipelined top-1. (V1 originally left `visible_at` as a heap residual on
+  the narrower premise that a btree cannot *range*-filter it and preserve the
+  order; V3 carries it as an in-index filter instead.)
 - **`_jobs_visible`** is a separate partial-pending index because the wait-timeout
   lookup orders by `visible_at`, a different ordering than the claim index's
   `(priority, created_at)`; one btree cannot serve both orderings (noted in the
@@ -155,15 +171,18 @@ Notes on specific indexes:
 - **`_jobs_dedup` is non-unique.** The `merge` decision's `Independent` outcome
   (ADR 10) permits more than one pending row with the same `(kind, dedup_key)`, so
   the index is a lookup aid, not a uniqueness constraint.
-- **`_jobs_history` serves both history listing and cleanup.** Listing filters
-  `status` + `kind` + a `finished_at` window directly. Age-only cleanup
-  (`status IN ('completed','dead') AND finished_at < cutoff`, no kind) uses the
-  `status` prefix and then filters `finished_at`, scanning that status's rows;
-  acceptable for a bulk maintenance operation. If age-only cleanup ever needs to be
-  cheaper, a dedicated `(status, finished_at)` index can be added.
+- **History listing and cleanup.** `_jobs_history` serves status+kind+`finished_at`
+  listing and a status-filtered cleanup directly. A status-less cleanup
+  (`finished_at < cutoff`, no status) has no leading-column match on it, so the
+  partial `_jobs_finished` (V3) serves that bulk delete as an indexed range scan
+  over only the terminal rows.
 - PostgreSQL does not auto-create an index on a foreign key's referencing column,
   so `_journal_job` is defined explicitly to back both the per-job timeline read
-  and the `ON DELETE CASCADE`.
+  (whose `ORDER BY id` the trailing `id` satisfies) and the `ON DELETE CASCADE`.
+- **No journal-by-kind index.** A speculative `(kind, recorded_at)` index existed
+  in V1 for a "journal global queries by kind over time" path that no code issues;
+  it was unused and dropped in V3. The denormalized journal `kind` column remains
+  for ad-hoc operator SQL, unindexed.
 
 ## Out of scope / not yet decided
 

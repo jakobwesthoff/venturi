@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Index tuning (migration `V3__index_tuning`): the claim indexes now carry
+  `visible_at` as a trailing key column so future-visible rows are filtered
+  in-index without a heap fetch on the hot claim path; a partial
+  `(finished_at) WHERE finished_at IS NOT NULL` index makes status-less cleanup
+  an indexed range scan instead of a sequential scan; the dedup and per-job
+  journal indexes gained trailing columns that eliminate a sort; and the unused
+  `(kind, recorded_at)` journal index was dropped. Applied automatically on the
+  next `migrate()`.
 - Documented that deduplication merges are last-writer-wins under concurrent
   enqueue of the same `(KIND, dedup_key)`: the candidate read, `Task::merge`
   decision, and write are not one transaction, so racing enqueues can both merge

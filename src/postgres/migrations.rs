@@ -51,9 +51,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
 /// The history table is `{prefix}_refinery_schema_history`, isolating this
 /// prefix's migration state from any other queue sharing the database.
 pub(crate) async fn apply(client: &mut Client, prefix: &str) -> Result<(), Error> {
-    // Substitute the prefix into each migration's name and body. The name's
-    // prefix keeps refinery's recorded migration identities distinct per queue,
-    // matching the per-prefix history table.
+    // Substitute the prefix into each migration's body only (`{{prefix}}` in the
+    // SQL). The migration name stays the literal `V1__initial` etc. Per-queue
+    // isolation comes from the per-prefix history table set below, not the name.
     let migrations = MIGRATIONS
         .iter()
         .map(|(name, sql)| {

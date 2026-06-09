@@ -6,6 +6,17 @@
 //! shutdown is signalled. When a handler finishes, the worker settles its outcome
 //! against the store. Horizontal scale comes from running more worker processes,
 //! each its own loop.
+//!
+//! # Clock assumption
+//!
+//! Two clocks are in play. Claim eligibility and lease expiry are evaluated in
+//! database time (the store compares against the database's `now()`), while the
+//! scheduling instants the worker writes back — retry/pause `visible_at`,
+//! `finished_at`, and journal `recorded_at` — are taken from the worker's
+//! `Utc::now()`. The two are assumed reasonably aligned (e.g. NTP-synced hosts).
+//! Under worker clock skew, retry and pause schedules shift relative to the
+//! lease arithmetic by roughly the skew; lease ownership stays correct because
+//! its guard is evaluated entirely in database time.
 
 mod registry;
 

@@ -284,14 +284,16 @@ impl Store for PostgresStore {
         &self,
         id: Ulid,
         claimed_by: &str,
+        run_no: i32,
         settlement: Settlement,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         // Every settlement clears the claim columns and is guarded by claim
-        // ownership, so a handler cannot settle a job another worker reclaimed.
+        // ownership at the claim epoch (`run_count`), so a handler cannot settle a
+        // job that was reclaimed and re-run — even under the same worker identity.
         // The transition and its journal entry share one transaction, so the
         // journal never records a settlement that did not apply.
-        let guard = "WHERE id = $1 AND claimed_by = $2 AND status = 'claimed'";
+        let guard = "WHERE id = $1 AND claimed_by = $2 AND run_count = $3 AND status = 'claimed'";
         let id = id.to_string();
         // Classify before the match below consumes `settlement`.
         let repends = notifies_on_repend(&settlement);
@@ -301,11 +303,12 @@ impl Store for PostgresStore {
         let affected = match settlement {
             Settlement::Complete { finished_at } => {
                 let sql = format!(
-                    "UPDATE {prefix}_jobs SET status = 'completed', finished_at = $3, \
+                    "UPDATE {prefix}_jobs SET status = 'completed', finished_at = $4, \
                          claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                tx.execute(&sql, &[&id, &claimed_by, &finished_at]).await?
+                tx.execute(&sql, &[&id, &claimed_by, &run_no, &finished_at])
+                    .await?
             }
             Settlement::Retry {
                 visible_at,
@@ -313,24 +316,24 @@ impl Store for PostgresStore {
                 carry,
             } => {
                 let sql = format!(
-                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
-                         failure_count = $4, carry = $5, claimed_by = NULL, \
+                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $4, \
+                         failure_count = $5, carry = $6, claimed_by = NULL, \
                          claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
                 tx.execute(
                     &sql,
-                    &[&id, &claimed_by, &visible_at, &failure_count, &carry],
+                    &[&id, &claimed_by, &run_no, &visible_at, &failure_count, &carry],
                 )
                 .await?
             }
             Settlement::Pause { visible_at, carry } => {
                 let sql = format!(
-                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
-                         carry = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $4, \
+                         carry = $5, claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                tx.execute(&sql, &[&id, &claimed_by, &visible_at, &carry])
+                tx.execute(&sql, &[&id, &claimed_by, &run_no, &visible_at, &carry])
                     .await?
             }
             Settlement::Dead {
@@ -338,20 +341,24 @@ impl Store for PostgresStore {
                 failure_count,
             } => {
                 let sql = format!(
-                    "UPDATE {prefix}_jobs SET status = 'dead', finished_at = $3, \
-                         failure_count = $4, claimed_by = NULL, claim_expires_at = NULL {guard}",
+                    "UPDATE {prefix}_jobs SET status = 'dead', finished_at = $4, \
+                         failure_count = $5, claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                tx.execute(&sql, &[&id, &claimed_by, &finished_at, &failure_count])
-                    .await?
+                tx.execute(
+                    &sql,
+                    &[&id, &claimed_by, &run_no, &finished_at, &failure_count],
+                )
+                .await?
             }
             Settlement::Release { visible_at } => {
                 let sql = format!(
-                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $3, \
+                    "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $4, \
                          claimed_by = NULL, claim_expires_at = NULL {guard}",
                     prefix = self.prefix,
                 );
-                tx.execute(&sql, &[&id, &claimed_by, &visible_at]).await?
+                tx.execute(&sql, &[&id, &claimed_by, &run_no, &visible_at])
+                    .await?
             }
         };
 
@@ -489,16 +496,20 @@ impl Store for PostgresStore {
         &self,
         id: Ulid,
         claimed_by: &str,
+        run_no: i32,
         lease: Duration,
     ) -> Result<bool, Error> {
         let sql = format!(
-            "UPDATE {prefix}_jobs SET claim_expires_at = now() + interval '1 second' * $3 \
-             WHERE id = $1 AND claimed_by = $2 AND status = 'claimed'",
+            "UPDATE {prefix}_jobs SET claim_expires_at = now() + interval '1 second' * $4 \
+             WHERE id = $1 AND claimed_by = $2 AND run_count = $3 AND status = 'claimed'",
             prefix = self.prefix,
         );
         let conn = self.pool.get().await?;
         let affected = conn
-            .execute(&sql, &[&id.to_string(), &claimed_by, &lease.as_secs_f64()])
+            .execute(
+                &sql,
+                &[&id.to_string(), &claimed_by, &run_no, &lease.as_secs_f64()],
+            )
             .await?;
         Ok(affected > 0)
     }

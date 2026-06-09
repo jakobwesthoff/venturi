@@ -143,6 +143,7 @@ async fn retry_settlement_notifies() {
         .settle(
             id,
             CLAIMED_BY,
+            run_no,
             Settlement::Retry {
                 visible_at: Utc::now(),
                 failure_count: 1,
@@ -171,6 +172,7 @@ async fn pause_settlement_notifies() {
         .settle(
             id,
             CLAIMED_BY,
+            run_no,
             Settlement::Pause {
                 visible_at: Utc::now(),
                 carry: serde_json::Value::Null,
@@ -198,6 +200,7 @@ async fn release_settlement_notifies() {
         .settle(
             id,
             CLAIMED_BY,
+            run_no,
             Settlement::Release {
                 visible_at: Utc::now(),
             },
@@ -224,6 +227,7 @@ async fn complete_settlement_does_not_notify() {
         .settle(
             id,
             CLAIMED_BY,
+            run_no,
             Settlement::Complete {
                 finished_at: Utc::now(),
             },
@@ -250,6 +254,7 @@ async fn dead_settlement_does_not_notify() {
         .settle(
             id,
             CLAIMED_BY,
+            run_no,
             Settlement::Dead {
                 finished_at: Utc::now(),
                 failure_count: 3,

@@ -138,6 +138,7 @@ impl Store for FakeStore {
         &self,
         id: Ulid,
         claimed_by: &str,
+        run_no: i32,
         settlement: Settlement,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
@@ -146,8 +147,13 @@ impl Store for FakeStore {
             return Ok(false);
         };
 
-        // The ownership guard: only the current claimant settles a claimed row.
-        if job.status != Status::Claimed || job.claimed_by.as_deref() != Some(claimed_by) {
+        // The ownership guard: only the current claimant, at the claim epoch it was
+        // handed, settles a claimed row. The `run_count` check rejects a stale run
+        // whose claim was reclaimed and re-run under the same identity.
+        if job.status != Status::Claimed
+            || job.claimed_by.as_deref() != Some(claimed_by)
+            || job.run_count != run_no
+        {
             return Ok(false);
         }
 
@@ -363,6 +369,7 @@ impl Store for FakeStore {
         &self,
         id: Ulid,
         claimed_by: &str,
+        run_no: i32,
         lease: Duration,
     ) -> Result<bool, Error> {
         let now = Utc::now();
@@ -370,7 +377,10 @@ impl Store for FakeStore {
         let Some(job) = guard.jobs.get_mut(&id) else {
             return Ok(false);
         };
-        if job.status != Status::Claimed || job.claimed_by.as_deref() != Some(claimed_by) {
+        if job.status != Status::Claimed
+            || job.claimed_by.as_deref() != Some(claimed_by)
+            || job.run_count != run_no
+        {
             return Ok(false);
         }
         job.claim_expires_at = Some(add_duration(now, lease));

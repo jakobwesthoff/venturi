@@ -335,7 +335,11 @@ pub trait Store: Send + Sync {
     /// Apply a settlement to a claimed job, guarded by claim ownership, appending
     /// `journal` in the same transaction.
     ///
-    /// The write applies only if the row is still `claimed` by `claimed_by`.
+    /// The write applies only if the row is still `claimed` by `claimed_by` at the
+    /// claim epoch `run_no` (the `run_count` stamped when this run claimed the job).
+    /// Matching on the epoch, not just the identity, means a slow or aborted handler
+    /// cannot settle a claim that was reclaimed and re-run — even when the reclaiming
+    /// worker shares its `claimed_by` identity (the common self-recovery case).
     /// Returns `true` if it applied and `false` if the guard did not match (the
     /// job was reclaimed or already settled), so the caller can skip rather than
     /// retry. When the guard does not match, the journal entry is not written.
@@ -343,6 +347,7 @@ pub trait Store: Send + Sync {
         &self,
         id: Ulid,
         claimed_by: &str,
+        run_no: i32,
         settlement: Settlement,
         journal: JournalAppend,
     ) -> Result<bool, Error>;
@@ -398,14 +403,18 @@ pub trait Store: Send + Sync {
         journal: JournalAppend,
     ) -> Result<bool, Error>;
 
-    /// Extend a claimed job's lease, guarded by claim ownership.
+    /// Extend a claimed job's lease, guarded by claim ownership at the claim epoch
+    /// `run_no`.
     ///
     /// Used to apply a per-task `Task::lease` override after the claim, which sets
-    /// only the worker default. Returns whether the lease was extended.
+    /// only the worker default. Guarding on `run_no` as well as `claimed_by` keeps
+    /// a stale run from extending the lease of a claim that was reclaimed under the
+    /// same identity. Returns whether the lease was extended.
     async fn extend_lease(
         &self,
         id: Ulid,
         claimed_by: &str,
+        run_no: i32,
         lease: Duration,
     ) -> Result<bool, Error>;
 

@@ -96,7 +96,7 @@ async fn ownership_guard_prevents_double_settle() {
     let kinds = vec!["unit".to_owned()];
 
     // Worker A claims with a tiny lease and then loses it to recovery.
-    store
+    let claim_a = store
         .claim_next(&kinds, 0, Duration::from_millis(100), "worker-a")
         .await
         .expect("claim a")
@@ -108,7 +108,7 @@ async fn ownership_guard_prevents_double_settle() {
         .expect("recover");
 
     // Worker B reclaims the now-pending job.
-    store
+    let claim_b = store
         .claim_next(&kinds, 0, Duration::from_secs(60), "worker-b")
         .await
         .expect("claim b")
@@ -127,6 +127,7 @@ async fn ownership_guard_prevents_double_settle() {
         .settle(
             id,
             "worker-a",
+            claim_a.run_count,
             Settlement::Complete {
                 finished_at: Utc::now(),
             },
@@ -138,6 +139,7 @@ async fn ownership_guard_prevents_double_settle() {
         .settle(
             id,
             "worker-b",
+            claim_b.run_count,
             Settlement::Complete {
                 finished_at: Utc::now(),
             },
@@ -148,6 +150,84 @@ async fn ownership_guard_prevents_double_settle() {
 
     assert!(!a_applied, "the stale owner cannot settle");
     assert!(b_applied, "the current owner settles");
+    assert_eq!(status_of(&db, &id.to_string()).await, "completed");
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn ownership_guard_prevents_self_reclaim_double_settle() {
+    let db = TestDb::start().await;
+    let store = db.store("venturi").await;
+    let id = Queue::new(Arc::new(store.clone()))
+        .enqueue(Unit)
+        .await
+        .expect("enqueue");
+    let kinds = vec!["unit".to_owned()];
+
+    // One worker identity claims, loses the lease to its own recovery, and then
+    // reclaims under the very same identity: the claim epoch is the only thing
+    // that distinguishes the stale run from the live one.
+    let claim_one = store
+        .claim_next(&kinds, 0, Duration::from_millis(100), "worker-a")
+        .await
+        .expect("claim one")
+        .expect("job");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    store
+        .recover(id, Utc::now(), 1, stale_journal("unit"))
+        .await
+        .expect("recover");
+    let claim_two = store
+        .claim_next(&kinds, 0, Duration::from_secs(60), "worker-a")
+        .await
+        .expect("claim two")
+        .expect("job");
+    assert_ne!(
+        claim_one.run_count, claim_two.run_count,
+        "the reclaim advances the epoch"
+    );
+
+    let journal = JournalAppend {
+        kind: "unit".to_owned(),
+        run_no: claim_one.run_count,
+        recorded_at: Utc::now(),
+        outcome: JournalOutcome::Completed,
+        note: None,
+        attachment: None,
+    };
+    let stale_applied = store
+        .settle(
+            id,
+            "worker-a",
+            claim_one.run_count,
+            Settlement::Complete {
+                finished_at: Utc::now(),
+            },
+            journal.clone(),
+        )
+        .await
+        .expect("stale settle");
+    let live_applied = store
+        .settle(
+            id,
+            "worker-a",
+            claim_two.run_count,
+            Settlement::Complete {
+                finished_at: Utc::now(),
+            },
+            JournalAppend {
+                run_no: claim_two.run_count,
+                ..journal
+            },
+        )
+        .await
+        .expect("live settle");
+
+    assert!(
+        !stale_applied,
+        "the stale claim epoch cannot settle even under the same identity"
+    );
+    assert!(live_applied, "the live claim settles");
     assert_eq!(status_of(&db, &id.to_string()).await, "completed");
 }
 

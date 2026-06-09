@@ -543,7 +543,11 @@ where
         if lease == self.config.lease {
             return;
         }
-        if let Err(error) = self.store.extend_lease(job.id, &self.identity, lease).await {
+        if let Err(error) = self
+            .store
+            .extend_lease(job.id, &self.identity, job.run_count, lease)
+            .await
+        {
             tracing::warn!(%error, "could not apply task lease override");
         }
     }
@@ -635,7 +639,7 @@ where
         let settlement = Settlement::Release { visible_at: now };
         if let Err(error) = self
             .store
-            .settle(job.id, &self.identity, settlement, journal)
+            .settle(job.id, &self.identity, job.run_no, settlement, journal)
             .await
         {
             tracing::warn!(%error, "release failed");
@@ -683,7 +687,7 @@ where
         };
 
         self.store
-            .settle(finished.id, &self.identity, settlement, journal)
+            .settle(finished.id, &self.identity, finished.run_no, settlement, journal)
             .await?;
         Ok(())
     }
@@ -1000,6 +1004,87 @@ mod tests {
             pushed >= near_max,
             "an add that overflows the representable range must not move backward"
         );
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_a_stale_run_after_same_identity_reclaim() {
+        use crate::store::{JournalAppend, JournalOutcome, Settlement, Status, Store};
+
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(SlowJob).await.expect("enqueue");
+        let kinds = vec!["slow".to_owned()];
+
+        let make_journal = |run_no: i32, outcome: JournalOutcome| JournalAppend {
+            kind: "slow".to_owned(),
+            run_no,
+            recorded_at: Utc::now(),
+            outcome,
+            note: None,
+            attachment: None,
+        };
+
+        // First claim, under one identity, with a short lease that will expire.
+        let first = store
+            .claim_next(&kinds, FLOOR_ALL, Duration::from_millis(40), "worker-a")
+            .await
+            .expect("claim")
+            .expect("a job");
+        assert_eq!(first.run_count, 1);
+
+        // The lease expires and the SAME worker identity recovers and reclaims it,
+        // exactly as a single worker's own `recover_stale` would.
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        let recovered = store
+            .recover(
+                id,
+                Utc::now(),
+                1,
+                make_journal(1, JournalOutcome::StaleRecovered),
+            )
+            .await
+            .expect("recover");
+        assert!(recovered);
+        let second = store
+            .claim_next(&kinds, FLOOR_ALL, Duration::from_secs(60), "worker-a")
+            .await
+            .expect("claim")
+            .expect("a job");
+        assert_eq!(second.run_count, 2);
+
+        // The first run's late completion must be rejected: the identity matches,
+        // but its claim epoch is stale. Without the epoch in the guard this would
+        // overwrite the live second claim with the first run's outcome.
+        let stale = store
+            .settle(
+                id,
+                "worker-a",
+                first.run_count,
+                Settlement::Complete {
+                    finished_at: Utc::now(),
+                },
+                make_journal(1, JournalOutcome::Completed),
+            )
+            .await
+            .expect("settle stale");
+        assert!(!stale, "a stale run must not settle under a matching identity");
+        assert_eq!(store.job(id).expect("job").status, Status::Claimed);
+
+        // The live second claim settles normally.
+        let current = store
+            .settle(
+                id,
+                "worker-a",
+                second.run_count,
+                Settlement::Complete {
+                    finished_at: Utc::now(),
+                },
+                make_journal(2, JournalOutcome::Completed),
+            )
+            .await
+            .expect("settle current");
+        assert!(current, "the live claim settles");
+        assert_eq!(store.count(Status::Completed), 1);
     }
 
     #[tokio::test]

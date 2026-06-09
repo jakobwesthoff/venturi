@@ -78,6 +78,19 @@ impl Queue {
 
     /// Bulk-delete terminal jobs matching the criteria, cascading to their
     /// journal entries. Returns the number of jobs deleted.
+    ///
+    /// Retention is **caller-driven**: venturi never prunes on its own. The
+    /// worker claims, runs, and recovers jobs, but completed and dead rows
+    /// accumulate until a caller deletes them, so bounding history is the
+    /// consumer's responsibility. How to drive it is open — a periodic sweep, or
+    /// an opportunistic call on the write path (e.g. cleaning up on each enqueue)
+    /// are both reasonable.
+    ///
+    /// Cost tracks the `finished_at` index the default adapter maintains: a sweep
+    /// with nothing yet due is an indexed probe over zero rows, not a table scan,
+    /// so driving it opportunistically on every enqueue is cheap; a sweep that
+    /// does delete additionally pays for the rows removed and their cascaded
+    /// journal entries.
     pub async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error> {
         self.store.cleanup(criteria).await
     }

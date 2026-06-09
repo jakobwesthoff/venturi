@@ -28,8 +28,12 @@ gives you.
 - **Scheduling:** three priority tiers with weighted-slot anti-starvation,
   per-kind concurrency caps, delayed/scheduled jobs, and `LISTEN`/`NOTIFY`
   wakeups with a polling fallback.
-- **Operations:** an append-only per-execution journal, a history query, bulk
-  cleanup, a live stats snapshot, `tracing` events, and optional `metrics`.
+- **Operations:** an append-only per-execution journal, a history query, a live
+  stats snapshot, `tracing` events, and optional `metrics`.
+- **Caller-driven retention.** venturi never prunes finished jobs on its own;
+  completed and dead rows are kept until you call `Queue::cleanup`. Drive it on a
+  timer or opportunistically on the write path — the `finished_at` index keeps an
+  empty sweep cheap. See [`Queue::cleanup`](https://docs.rs/venturi/latest/venturi/struct.Queue.html#method.cleanup).
 
 ## Installation
 

@@ -435,6 +435,11 @@ pub trait Store: Send + Sync {
 
     /// Bulk-delete terminal jobs matching the criteria, cascading to the journal.
     /// Returns the number of jobs deleted.
+    ///
+    /// Invoked only when a caller asks: nothing in venturi calls this on its own
+    /// (see [`Queue::cleanup`](crate::Queue::cleanup) for the retention contract).
+    /// The predicate is anchored on `finished_at`, which the default adapter
+    /// indexes, so an empty sweep is an indexed probe rather than a table scan.
     async fn cleanup(&self, criteria: &CleanupCriteria) -> Result<u64, Error>;
 
     /// Compute a live state snapshot from on-demand aggregate queries.

@@ -1,35 +1,30 @@
-# Carry serialization failure after a successful run is misclassified as dead
+# Carry serialization failure after a successful run — RESOLVED
 
-## Problem
+## Decision (accepted)
 
-In `erased_run` (`src/worker/registry.rs:192`), after a handler returns
-`Ok(result)`, the carry is serialized with `serde_json::to_value(carry)?`. If
-that `?` fires, the spawned task returns `Err(Error::Serialization(..))`. In
-`settle()` (`src/worker/mod.rs:630-636`) that `Err` is handled by the
-"job could not be dispatched; marking dead" branch.
+A post-run carry-serialization failure settles the job **dead**, which is the
+accepted behavior: the handler ran, but its carry cannot be persisted and
+re-running would only fail to serialize again, so dead (terminal, no retry) is
+the honest outcome without inventing a new state. We do not introduce a separate
+"ran but carry unencodable" lifecycle state.
 
-So a job whose handler ran to completion, but whose resulting carry could not be
-serialized, is:
+## What changed
 
-- logged as an undispatchable job (misleading: it dispatched and ran), and
-- sent to dead rather than handled as a run outcome.
+The defect was the *misreporting*, now fixed: such a run was previously routed
+through the "job could not be dispatched; marking dead" branch with a generic
+note. In `erased_run` (`src/worker/registry.rs`), a failure of
+`serde_json::to_value(carry)` after a successful `Ok(result)` is now converted
+into a permanent `TaskError` with the message "handler completed but its carry
+could not be serialized: <detail>", settled dead through the normal outcome
+routing. The pre-run decode failures still report genuine dispatch failures.
 
-In practice this is rare: `Carry: Serialize` is a trait bound and
-`serde_json::to_value` fails only for exotic cases (non-finite floats, non-string
-map keys). But when it happens the diagnosis is confusing and the terminal state
-is surprising.
+Regression test:
+`worker::tests::completed_run_with_unencodable_carry_is_dead_with_an_accurate_note`.
 
-## Decision needed
+## Future consideration (optional)
 
-What is the correct outcome for a post-run carry-serialization failure?
+If a use case ever needs to distinguish "completed-but-carry-lost" from a real
+permanent task failure (e.g. for alerting), a dedicated journal outcome could be
+added. Not planned.
 
-- Retrying re-runs a handler that already produced side effects, and the carry
-  will fail to serialize again, so a plain retry is not obviously right.
-- A distinct terminal classification ("ran but carry unencodable") with an
-  accurate log may be the honest behavior.
-
-This is a behavior decision for the maintainer; do not invent it. Separate the
-post-run serialization path from the pre-run dispatch path in `settle()` once the
-intended outcome is chosen.
-
-Source: review finding, `src/worker/registry.rs:192`, `src/worker/mod.rs:630-636`.
+Source: review finding, `src/worker/registry.rs`, `src/worker/mod.rs` settle.

@@ -189,14 +189,30 @@ where
             match caught {
                 Ok(result) => {
                     let (carry, attachment) = ctx.into_parts();
-                    let carry = serde_json::to_value(carry)?;
-                    Ok(RunReport {
-                        result,
-                        carry,
-                        backoff,
-                        attachment,
-                        duration,
-                    })
+                    // The handler already ran to completion here, so a carry that
+                    // cannot be serialized is not a dispatch failure: surface it as a
+                    // permanent failure with an accurate message, settled dead through
+                    // the normal outcome routing (re-running would only fail to encode
+                    // again). The pre-run decode `?`s above still report genuine
+                    // dispatch failures.
+                    match serde_json::to_value(carry) {
+                        Ok(carry) => Ok(RunReport {
+                            result,
+                            carry,
+                            backoff,
+                            attachment,
+                            duration,
+                        }),
+                        Err(error) => Ok(RunReport {
+                            result: Err(TaskError::permanent(format!(
+                                "handler completed but its carry could not be serialized: {error}"
+                            ))),
+                            carry: serde_json::Value::Null,
+                            backoff,
+                            attachment,
+                            duration,
+                        }),
+                    }
                 }
                 Err(panic) => {
                     // The configured policy decides whether a panic is a retryable

@@ -1169,6 +1169,63 @@ mod tests {
         assert_eq!(store.job(id).expect("job").status, Status::Pending);
     }
 
+    /// A handler that completes successfully but leaves a carry that cannot be
+    /// serialized to JSON: a map with non-string (tuple) keys, which
+    /// `serde_json::to_value` rejects at runtime.
+    #[derive(Serialize, Deserialize)]
+    struct Unencodable;
+
+    impl crate::task::Task for Unencodable {
+        const KIND: &'static str = "unencodable";
+        type Carry = std::collections::BTreeMap<(i32, i32), i32>;
+    }
+
+    impl Handler<()> for Unencodable {
+        async fn handle(
+            &self,
+            ctx: &mut Context<std::collections::BTreeMap<(i32, i32), i32>>,
+            _state: &(),
+        ) -> Result<Outcome, TaskError> {
+            ctx.carry_mut().insert((1, 2), 3);
+            Ok(Outcome::completed())
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_run_with_unencodable_carry_is_dead_with_an_accurate_note() {
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(Unencodable).await.expect("enqueue");
+
+        let worker = Worker::builder((), Arc::new(store.clone()))
+            .register::<Unencodable>()
+            .build();
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(worker.run(shutdown.clone()));
+        wait_until(|| store.count(crate::store::Status::Dead) == 1).await;
+        shutdown.cancel();
+        handle.await.expect("worker joins");
+
+        // The run completed, so the job is dead (the carry could not be persisted
+        // and re-running would only fail to serialize again) — but the journal
+        // note must describe that, not misreport the run as undispatchable.
+        let job = store.job(id).expect("job exists");
+        assert_eq!(job.status, crate::store::Status::Dead);
+        let note = store
+            .journal(id)
+            .await
+            .expect("journal")
+            .last()
+            .expect("a journal entry")
+            .note
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            note.contains("carry could not be serialized"),
+            "the note must describe the post-run carry serialization failure, got: {note:?}"
+        );
+    }
+
     #[tokio::test]
     async fn worker_with_no_kinds_returns_immediately() {
         let store = FakeStore::new();

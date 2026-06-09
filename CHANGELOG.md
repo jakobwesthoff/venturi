@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- A run that completes successfully but whose carry cannot be serialized to JSON
+  is now journaled with an accurate note ("handler completed but its carry could
+  not be serialized") and settled dead through the normal outcome path, instead
+  of being misreported as an undispatchable job. (The job still goes to dead:
+  the carry cannot be persisted and re-running would only fail to encode again.)
+
 ## 0.3.0 - 2026-06-09
 
 ### Added

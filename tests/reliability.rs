@@ -69,7 +69,7 @@ async fn expired_lease_is_recovered_as_a_failed_execution() {
 
     let now = Utc::now();
     let recovered = store
-        .recover(id, now, 1, stale_journal("unit"))
+        .recover(id, now, 1, stale[0].run_count, stale_journal("unit"))
         .await
         .expect("recover");
     assert!(recovered);
@@ -103,7 +103,7 @@ async fn ownership_guard_prevents_double_settle() {
         .expect("job");
     tokio::time::sleep(Duration::from_millis(250)).await;
     store
-        .recover(id, Utc::now(), 1, stale_journal("unit"))
+        .recover(id, Utc::now(), 1, claim_a.run_count, stale_journal("unit"))
         .await
         .expect("recover");
 
@@ -174,7 +174,7 @@ async fn ownership_guard_prevents_self_reclaim_double_settle() {
         .expect("job");
     tokio::time::sleep(Duration::from_millis(250)).await;
     store
-        .recover(id, Utc::now(), 1, stale_journal("unit"))
+        .recover(id, Utc::now(), 1, claim_one.run_count, stale_journal("unit"))
         .await
         .expect("recover");
     let claim_two = store

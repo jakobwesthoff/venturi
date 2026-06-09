@@ -524,7 +524,13 @@ where
             let kind = job.kind.clone();
             match self
                 .store
-                .recover(job.id, add_duration(now, delay), next_failures, journal)
+                .recover(
+                    job.id,
+                    add_duration(now, delay),
+                    next_failures,
+                    job.run_count,
+                    journal,
+                )
                 .await
             {
                 Ok(true) => crate::observability::recovered(&kind),
@@ -1040,6 +1046,7 @@ mod tests {
                 id,
                 Utc::now(),
                 1,
+                first.run_count,
                 make_journal(1, JournalOutcome::StaleRecovered),
             )
             .await
@@ -1085,6 +1092,70 @@ mod tests {
             .expect("settle current");
         assert!(current, "the live claim settles");
         assert_eq!(store.count(Status::Completed), 1);
+    }
+
+    #[tokio::test]
+    async fn recover_rejects_a_stale_snapshot_after_the_claim_advanced() {
+        use crate::store::{JournalAppend, JournalOutcome, Status, Store};
+
+        let store = FakeStore::new();
+        let queue = Queue::new(Arc::new(store.clone()));
+        let id = queue.enqueue(SlowJob).await.expect("enqueue");
+        let kinds = vec!["slow".to_owned()];
+
+        let make_journal = |run_no: i32| JournalAppend {
+            kind: "slow".to_owned(),
+            run_no,
+            recorded_at: Utc::now(),
+            outcome: JournalOutcome::StaleRecovered,
+            note: None,
+            attachment: None,
+        };
+
+        // Claim under a short lease and take the stale snapshot (epoch 1).
+        let snapshot = store
+            .claim_next(&kinds, FLOOR_ALL, Duration::from_millis(40), "worker-a")
+            .await
+            .expect("claim")
+            .expect("a job");
+        assert_eq!(snapshot.run_count, 1);
+        tokio::time::sleep(Duration::from_millis(70)).await;
+
+        // Another recovery path re-pends the job (epoch still 1), then it is
+        // reclaimed (epoch 2) and that lease also expires.
+        assert!(
+            store
+                .recover(id, Utc::now(), 1, snapshot.run_count, make_journal(1))
+                .await
+                .expect("first recover")
+        );
+        let reclaim = store
+            .claim_next(&kinds, FLOOR_ALL, Duration::from_millis(40), "worker-a")
+            .await
+            .expect("reclaim")
+            .expect("a job");
+        assert_eq!(reclaim.run_count, 2);
+        tokio::time::sleep(Duration::from_millis(70)).await;
+
+        // The original snapshot's recover (epoch 1) arrives late. It must be
+        // rejected: the claim has advanced to epoch 2, and applying the stale
+        // recover would regress the failure count and journal a stale run.
+        let stale_applied = store
+            .recover(id, Utc::now(), 1, snapshot.run_count, make_journal(1))
+            .await
+            .expect("stale recover");
+        assert!(
+            !stale_applied,
+            "a recovery from a superseded snapshot epoch must not apply"
+        );
+
+        // The live epoch-2 claim still recovers normally.
+        let live_applied = store
+            .recover(id, Utc::now(), 2, reclaim.run_count, make_journal(2))
+            .await
+            .expect("live recover");
+        assert!(live_applied, "the current claim epoch recovers");
+        assert_eq!(store.job(id).expect("job").status, Status::Pending);
     }
 
     #[tokio::test]

@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** `Store` gains a required `job` method. Custom `Store`
   implementations must add it; the bundled PostgreSQL adapter already does.
+- **Breaking:** `Store::settle`, `Store::extend_lease`, and `Store::recover`
+  take an additional `run_no` (claim epoch) argument that participates in their
+  ownership guards. Custom `Store` implementations must thread it through.
 
 ### Fixed
 
@@ -26,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer settle a job that was reclaimed and re-run, even when the reclaiming
   worker shares the same `host:pid` identity (the common self-recovery case) or
   when two workers collide on identity.
+- Stale-claim recovery now carries the same claim epoch in its guard, so a
+  recovery computed from an older `find_stale` snapshot can no longer re-pend a
+  claim that has since been reclaimed and re-run (which would have regressed the
+  failure count and journaled a stale run number).
 - An overflowing `pause`/retry delay now parks the job in the far future instead
   of collapsing to `now`, which had made a very long pause immediately eligible
   again and spun a tight claim/pause loop.

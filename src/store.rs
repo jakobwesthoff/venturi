@@ -393,13 +393,18 @@ pub trait Store: Send + Sync {
     /// Recover a stale claim, re-pending it as a failed execution and appending
     /// `journal`.
     ///
-    /// Guarded by the row still being claimed with an expired lease, so two
-    /// workers cannot both recover it. Returns whether this call recovered it.
+    /// Guarded by the row still being claimed with an expired lease *at the claim
+    /// epoch `run_no`* (the `run_count` of the stale claim this recovery observed).
+    /// The epoch keeps a recovery computed from an older `find_stale` snapshot from
+    /// re-pending a claim that has since been reclaimed and re-run, which would
+    /// otherwise regress `failure_count` and journal a stale `run_no`. Returns
+    /// whether this call recovered it.
     async fn recover(
         &self,
         id: Ulid,
         visible_at: DateTime<Utc>,
         failure_count: i32,
+        run_no: i32,
         journal: JournalAppend,
     ) -> Result<bool, Error>;
 

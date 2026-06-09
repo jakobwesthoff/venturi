@@ -341,6 +341,7 @@ impl Store for FakeStore {
         id: Ulid,
         visible_at: DateTime<Utc>,
         failure_count: i32,
+        run_no: i32,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         let now = Utc::now();
@@ -348,7 +349,11 @@ impl Store for FakeStore {
         let Some(job) = guard.jobs.get_mut(&id) else {
             return Ok(false);
         };
+        // Guarded by the claim still being expired *at the observed epoch*, so a
+        // recovery from a superseded `find_stale` snapshot cannot re-pend a claim
+        // that has since advanced.
         let expired = job.status == Status::Claimed
+            && job.run_count == run_no
             && job.claim_expires_at.is_some_and(|expiry| expiry < now);
         if !expired {
             return Ok(false);

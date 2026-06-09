@@ -286,6 +286,7 @@ async fn recover_notifies() {
             id,
             Utc::now(),
             run_no + 1,
+            run_no,
             journal(run_no, JournalOutcome::StaleRecovered),
         )
         .await

@@ -444,20 +444,25 @@ impl Store for PostgresStore {
         id: Ulid,
         visible_at: DateTime<Utc>,
         failure_count: i32,
+        run_no: i32,
         journal: JournalAppend,
     ) -> Result<bool, Error> {
         let id = id.to_string();
         let mut conn = self.pool.get().await?;
         let tx = conn.transaction().await?;
 
+        // The epoch guard (`run_count = $4`) keeps a recovery derived from an older
+        // `find_stale` snapshot from re-pending a claim that was reclaimed and
+        // re-run since, which would otherwise regress `failure_count`.
         let update = format!(
             "UPDATE {prefix}_jobs SET status = 'pending', visible_at = $2, \
                  failure_count = $3, claimed_by = NULL, claim_expires_at = NULL \
-             WHERE id = $1 AND status = 'claimed' AND claim_expires_at < now()",
+             WHERE id = $1 AND status = 'claimed' AND claim_expires_at < now() \
+                 AND run_count = $4",
             prefix = self.prefix,
         );
         let affected = tx
-            .execute(&update, &[&id, &visible_at, &failure_count])
+            .execute(&update, &[&id, &visible_at, &failure_count, &run_no])
             .await?;
 
         if affected > 0 {

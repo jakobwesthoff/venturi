@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- The settlement ownership guard now matches the claim epoch (`run_count`) in
+  addition to the claiming worker's identity. A slow or aborted handler run can
+  no longer settle a job that was reclaimed and re-run, even when the reclaiming
+  worker shares the same `host:pid` identity (the common self-recovery case) or
+  when two workers collide on identity.
+- An overflowing `pause`/retry delay now parks the job in the far future instead
+  of collapsing to `now`, which had made a very long pause immediately eligible
+  again and spun a tight claim/pause loop.
+
 ## 0.2.0 - 2026-06-09
 
 ### Added

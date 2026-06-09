@@ -310,6 +310,9 @@ impl Store for FakeStore {
                         .pending_by_kind
                         .entry(job.kind.clone())
                         .or_insert(0) += 1;
+                    // Tracking `max(age)` per kind is the in-memory equivalent of
+                    // the Postgres adapter's `min(created_at)`: the oldest enqueue
+                    // time yields the maximum age.
                     let age = (now - job.created_at).to_std().unwrap_or(Duration::ZERO);
                     snapshot
                         .oldest_pending_age

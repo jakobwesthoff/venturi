@@ -304,7 +304,10 @@ mod tests {
             .await
             .expect("second enqueue");
 
-        assert_ne!(first, second, "the fallback inserts a fresh job, not the candidate");
+        assert_ne!(
+            first, second,
+            "the fallback inserts a fresh job, not the candidate"
+        );
         assert_eq!(store.count(Status::Pending), 2, "no work is lost");
 
         let fresh = store.job(second).expect("fresh job exists");

@@ -150,12 +150,13 @@ impl AsyncQuery<Vec<Migration>> for PgMigrationClient<'_> {
                 }
             })?;
             let checksum: String = row.get(3);
-            let checksum = checksum.parse::<u64>().map_err(|_| {
-                MigrationBridgeError::MalformedHistory {
-                    field: "checksum",
-                    value: checksum.clone(),
-                }
-            })?;
+            let checksum =
+                checksum
+                    .parse::<u64>()
+                    .map_err(|_| MigrationBridgeError::MalformedHistory {
+                        field: "checksum",
+                        value: checksum.clone(),
+                    })?;
 
             applied.push(Migration::applied(version, name, applied_on, checksum));
         }

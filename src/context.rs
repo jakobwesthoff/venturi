@@ -152,6 +152,15 @@ impl<Carry> Context<Carry> {
         self.cancel.cancelled()
     }
 
+    /// The run's cancellation token, cloned. Hand this to a child subsystem that
+    /// takes a `CancellationToken` (rather than the poll/future the methods above
+    /// offer) so it observes the same cancellation as the handler — for example,
+    /// passing it into a nested executor's own cancellation seam. The token tracks
+    /// the worker's graceful shutdown.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
     /// Consume the context after a run, yielding the (possibly mutated) carry and
     /// attachment for settlement.
     pub(crate) fn into_parts(self) -> (Carry, Option<serde_json::Value>) {
@@ -168,5 +177,17 @@ mod tests {
         let id = Ulid::new();
         let ctx = Context::new(id, 1, Vec::new(), (), CancellationToken::new());
         assert_eq!(ctx.id(), id);
+    }
+
+    #[test]
+    fn cancellation_token_tracks_the_runs_cancellation() {
+        let cancel = CancellationToken::new();
+        let ctx = Context::new(Ulid::new(), 1, Vec::new(), (), cancel.clone());
+        let token = ctx.cancellation_token();
+        assert!(!token.is_cancelled());
+        // Cancelling the source the run was built with cancels the handed-out clone.
+        cancel.cancel();
+        assert!(token.is_cancelled());
+        assert!(ctx.is_cancelled());
     }
 }

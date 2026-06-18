@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same across every run of the job, so a handler can correlate the execution
   with its own logs, traces, or downstream records (for example, using it as a
   shared execution id) without threading the id through the task payload.
+- `Context::cancellation_token` returns the run's `CancellationToken` (cloned), so
+  a handler can hand it to a child subsystem that takes a `CancellationToken`
+  rather than the existing `is_cancelled`/`cancelled` poll-and-future pair. The
+  token tracks the worker's graceful shutdown, the same signal those methods
+  observe.
 
 ## 0.4.0 - 2026-06-10
 

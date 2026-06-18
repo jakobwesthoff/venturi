@@ -23,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Everything one run needs, in type-erased form.
 pub(crate) struct RunInput<S> {
+    /// The job's stable identifier, exposed to the handler through `Context::id`.
+    pub id: ulid::Ulid,
     /// The stored task payload as JSON.
     pub payload: serde_json::Value,
     /// The stored carried state as JSON (`null` means "use the default").
@@ -167,7 +169,13 @@ where
                 serde_json::from_value(input.carry)?
             };
 
-            let mut ctx = Context::new(input.run_count, input.history, carry, input.cancel);
+            let mut ctx = Context::new(
+                input.id,
+                input.run_count,
+                input.history,
+                carry,
+                input.cancel,
+            );
             let started = std::time::Instant::now();
 
             // Catch a panic at the task boundary so it settles as a failed
@@ -281,6 +289,7 @@ mod tests {
 
     fn input(payload: serde_json::Value, state: Arc<Sink>) -> RunInput<Sink> {
         RunInput {
+            id: ulid::Ulid::new(),
             payload,
             carry: serde_json::Value::Null,
             run_count: 1,

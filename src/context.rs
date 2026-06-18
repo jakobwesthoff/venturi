@@ -10,6 +10,7 @@ use crate::store::JournalOutcome;
 use chrono::{DateTime, Utc};
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
+use ulid::Ulid;
 
 /// A read-only view of one prior journal entry, as a handler sees its history.
 ///
@@ -77,6 +78,7 @@ impl JournalEntry {
 /// job (run count, prior journal, deserialized carry) and reads back the carry
 /// and attachment after the run to settle the job.
 pub struct Context<Carry> {
+    id: Ulid,
     run_count: u32,
     history: Vec<JournalEntry>,
     carry: Carry,
@@ -87,18 +89,27 @@ pub struct Context<Carry> {
 impl<Carry> Context<Carry> {
     /// Build a context for a run. Called by the worker, not by handlers.
     pub(crate) fn new(
+        id: Ulid,
         run_count: u32,
         history: Vec<JournalEntry>,
         carry: Carry,
         cancel: CancellationToken,
     ) -> Context<Carry> {
         Context {
+            id,
             run_count,
             history,
             carry,
             attachment: None,
             cancel,
         }
+    }
+
+    /// The job's stable, globally unique identifier. The same id across every run
+    /// of the job, so a handler can use it to correlate this execution with its own
+    /// logs, traces, or downstream records.
+    pub fn id(&self) -> Ulid {
+        self.id
     }
 
     /// How many times this job has been executed, including the current run.
@@ -145,5 +156,17 @@ impl<Carry> Context<Carry> {
     /// attachment for settlement.
     pub(crate) fn into_parts(self) -> (Carry, Option<serde_json::Value>) {
         (self.carry, self.attachment)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_returns_the_job_id_the_context_was_built_with() {
+        let id = Ulid::new();
+        let ctx = Context::new(id, 1, Vec::new(), (), CancellationToken::new());
+        assert_eq!(ctx.id(), id);
     }
 }

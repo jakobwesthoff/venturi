@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `Context::id` exposes the running job's stable `Ulid` to its handler. The id is
+  the same across every run of the job, so a handler can correlate the execution
+  with its own logs, traces, or downstream records (for example, using it as a
+  shared execution id) without threading the id through the task payload.
+
 ## 0.4.0 - 2026-06-10
 
 ### Added

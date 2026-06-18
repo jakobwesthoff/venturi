@@ -620,6 +620,7 @@ where
         let failure_count = job.failure_count;
 
         let input = RunInput {
+            id,
             payload: job.payload,
             carry: job.carry,
             run_count: job.run_count,

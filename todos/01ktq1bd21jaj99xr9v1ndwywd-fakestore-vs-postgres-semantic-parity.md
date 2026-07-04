@@ -2,8 +2,8 @@
 
 One change request: audit and align the in-memory `FakeStore` with the
 PostgreSQL adapter (or document the divergences) so a unit test against the fake
-does not pass while the real adapter would behave differently. Two known
-divergences; both are about the fake silently disagreeing with PG.
+does not pass while the real adapter would behave differently. Three known
+divergences; all are about the fake silently disagreeing with PG.
 
 ## 1. `HistoryFilter::limit` negative value
 
@@ -24,6 +24,19 @@ leaves ties to the planner. Only observable with colliding timestamps.
 
 Fix: give the adapter a deterministic tie-break (`ORDER BY created_at, id`) so the
 two agree, or document that ties are unspecified.
+
+## 3. `find_stale` batch bound and ordering
+
+`PostgresStore::find_stale` returns at most 100 rows, oldest expiry first
+(`ORDER BY claim_expires_at LIMIT 100`, `src/postgres/mod.rs:451-465`);
+`FakeStore::find_stale` returns every stale claim in arbitrary map order
+(`src/test_support.rs:348-361`). A test that relies on all stale claims being
+recovered in one `recover_stale` pass passes against the fake but would need
+several passes against PG once more than 100 claims are stale, and any
+ordering assumption on the recovery sequence holds only on PG.
+
+Fix: mirror the bound and ordering in the fake (sort by `claim_expires_at`,
+truncate to 100), sharing the constant with the adapter so they cannot drift.
 
 ## Note
 

@@ -1,0 +1,34 @@
+---
+title: "The stats() snapshot is not atomic across its three queries"
+kind: bug
+component: postgres
+status: needs-discussion
+origin: review
+tags: [observability]
+---
+# The stats() snapshot is not atomic across its three queries
+
+`PostgresStore::stats()` reads its three aggregates in separate autocommit statements, so the returned `Snapshot` is not a coherent point-in-time view. Found in a review (`src/postgres/mod.rs:658-698`).
+
+## Problem
+
+`PostgresStore::stats()` (`src/postgres/mod.rs:658-698`) runs three
+aggregate queries (pending-by-kind, claimed count, dead-by-kind) on one
+pooled connection but outside any transaction, so each statement autocommits
+with its own snapshot. A job moving between states (e.g. `claimed ->
+completed`) in the window between two queries can be counted in neither or
+both. The `Snapshot` doc implies a coherent point-in-time view that the
+implementation does not guarantee.
+
+## Suggested fix
+
+Wrap the three queries in a single `REPEATABLE READ` transaction (or fold them
+into one combined query) so the returned snapshot is internally consistent.
+
+## Decision needed
+
+Confirm whether callers actually need a consistent cross-state snapshot, or
+whether approximate counts are acceptable for the intended monitoring use. If
+approximate is fine, instead soften the `Snapshot` documentation.
+
+Source: review finding, `src/postgres/mod.rs:658-698`.

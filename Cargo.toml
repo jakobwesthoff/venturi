@@ -9,9 +9,10 @@ homepage = "https://westhoffswelt.de"
 documentation = "https://docs.rs/venturi"
 keywords = ["queue", "jobs", "postgres", "background", "worker"]
 categories = ["asynchronous", "database"]
-# Design docs, todos and repository tooling are not needed to build
-# venturi; `migrations/` stays, as the crate embeds it.
-exclude = [".adr-dir", ".github/", "Justfile", "docs/", "todos/"]
+# ADRs, design docs, todos and repository tooling are not needed to build
+# venturi. `migrations/` stays, as the crate embeds it, and so does
+# `docs/guide.md`, which the crate docs point readers to.
+exclude = [".adr-dir", ".github/", "Justfile", "docs/adr/", "docs/design/", "todos/"]
 
 [dependencies]
 async-trait = "0.1.89"
